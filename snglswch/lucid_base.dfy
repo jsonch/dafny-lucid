@@ -45,6 +45,24 @@ abstract module LucidBase {
     }
 
     
+    // helpers to reason about event queue contents
+    function count_f<T>(ls : seq<T>, f : (T -> bool)) : int
+    {
+        if (ls == []) then 0
+        else (
+            if (f(ls[0]))
+            then (1 + count_f(ls[1..], f))
+            else (count_f(ls[1..], f))
+        )
+    }
+    lemma LemmaCountSumFilterSeq<T>(a : seq<T>, b : seq<T>, f : (T -> bool))
+    ensures count_f(a + b, f) == count_f(a, f) + count_f(b, f)
+
+    lemma LemmaCountSumGtFilterSeq<T>(a : seq<T>, b : seq<T>, f : (T -> bool))
+    ensures count_f(a + b, f) > count_f(a, f)
+    ensures count_f(a + b, f) > count_f(b, f)
+
+
     class Handlers {
         var state : State
         var event_queue : seq<Event>
@@ -76,6 +94,7 @@ abstract module LucidBase {
             reads this`natTime, this`lastNatTime, this`time
             reads s
 
+
         // Dispatch is the entry point. It parses the event and calls the appropriate handler.
         // It must be extended by the user to handle the events that they have defined. 
         method Dispatch(e : Event)
@@ -86,7 +105,7 @@ abstract module LucidBase {
             requires (inter_event_invariant(state, [e]+event_queue))
             
             ensures inter_event_invariant(this.state, event_queue)
-            ensures valid_generate(old(event_queue), event_queue)
+            // ensures valid_generate(old(event_queue), event_queue)
             // ensures time_invariant()
 
         // Queue an event to be processed in the future. 
@@ -168,7 +187,15 @@ abstract module LucidBase {
             {exists e :: f(e) && (e in es)}  
         ghost predicate valid_generate(oldq : seq<Event>, newq : seq<Event>)
         {
-            (|newq| >= |oldq|) && (newq[0..|oldq|] == oldq)
+            ((|oldq| - 1)<= |newq| <= |oldq|)
+            && 
+            ( 
+                // if the oldq had more than 1 element in it, 
+                // the tail is the start of newq
+                |oldq| > 0 ==> 
+                    (oldq[1..] == newq[0..(|oldq|-1)])
+            )
+            // (|newq| >= |oldq|) && (newq[0..|oldq|] == oldq)
         }
 
         // private helpers

@@ -84,13 +84,100 @@ module LucidProg refines LucidBase {
       } 
    
    
+
       predicate parameterConstraints ()      // from problem domain, ghost  
          // reads this
       {  I > 0 && QRoff > Q > 0  && W >= Q  }
 
+      function is_setfiltering (e : Event) : bool 
+      {
+         match e {
+            case SetFiltering(_) => true
+            case _ => false
+         }
+      }
+      function is_setfiltering_true (e : Event) : bool 
+      {
+         match e {
+            case SetFiltering(true) => true
+            case _ => false
+         }
+      }
+      function is_setfiltering_false (e : Event) : bool 
+      {
+         match e {
+            case SetFiltering(false) => true
+            case _ => false
+         }
+      }
 
 
-      ghost predicate stateInvariant (state : State)         // ghost
+      ghost predicate recircInvariant (state : State, events : seq<Event>) 
+      reads state 
+      {
+         (
+            if state.recircPending
+            then 
+            (
+               (|events| > 0)
+               &&
+               count_f(events, is_setfiltering) == 1
+               &&
+               (
+                  if state.filtering
+                  then
+                  (
+                     count_f(events, is_setfiltering_false) == 1
+                  )
+                  else
+                  (
+                     count_f(events, is_setfiltering_true) == 1
+                  )
+               )
+            )
+            else 
+            (
+               count_f(events, is_setfiltering) == 0
+               && 
+               count_f(events, is_setfiltering_false) == 0
+               && 
+               count_f(events, is_setfiltering_true) == 0
+            )
+         )
+         &&
+         // we have to say something about "if there's a setfiltering in the queue, recircpending is true"
+         (
+            if ( count_f(events, is_setfiltering) >0)
+            then (
+               state.recircPending == true
+            )
+            else (
+               state.recircPending == false
+            )
+         )
+         // &&
+         // (
+         //    // if the first event in the queue is a set filtering, none of the 
+         //    // other events are.
+         //    (|events|>0 && is_setfiltering(events[0])) 
+         //       ==> count_f(events[1..], is_setfiltering) == 0
+         // )
+      
+
+         // if (state.recircPending) then (
+         //    if (state.filtering) then (
+         //       count_f(events, is_setfiltering_true) == 1
+         //    )
+         //    else (
+         //       count_f(events, is_setfiltering_false) == 1
+         //    )
+         // )
+         // else (
+         //    count_f(events, is_setfiltering) == 0
+         // )
+      }
+
+      ghost predicate stateInvariant (state : State, es : seq<Event>)         // ghost
          reads this`natTime, this`lastNatTime, this`time
          reads state
       {
@@ -101,6 +188,7 @@ module LucidProg refines LucidBase {
                   (protecting (state, natTime) <==> protectImplmnt (state, time))  )
          && (  ! state.filtering ==> state.requestSet == {}  )
          && (  state.recircPending ==> (state.filtering == ! state.recircSwitch)  )
+         && recircInvariant(state, es)
          // TODO: the last part of this invariant, with the recirculation ghost variable, needs to be replaced with queue predicates
          // state.recircSwitch means "there is a recirc event in the queue"
       }
@@ -127,16 +215,17 @@ module LucidProg refines LucidBase {
 
       ghost predicate inter_event_invariant(s : State, es : seq<Event>)
       {
-         parameterConstraints() && stateInvariant(s) 
+         parameterConstraints() && stateInvariant(s, es) 
          && (natTime - lastNatTime < T - I)
          && (natTime < s.actualTimeOn + T)
 
       }
 
+   
       method Dispatch(e : Event) 
       {
          if 
-            case e.SetFiltering? => SetFiltering(e.on);
+            case e.SetFiltering? => setFiltering(e);
             case e.ProcessPacket? => {
                var fwd := ProcessPacket(e.dnsRequest, e.uniqueSig);
 
@@ -150,6 +239,7 @@ module LucidProg refines LucidBase {
          (dnsRequest: bool, uniqueSig: nat)
                                                 returns (forwarded: bool)   
          modifies this.state
+         modifies this`event_queue
          // requires time == natTime % T
          // Two packets can have the same timestamp.
             // requires natTime >= lastNatTime
@@ -159,14 +249,14 @@ module LucidProg refines LucidBase {
          // Constraint to make attack time spans measurable.
             // requires natTime < state.actualTimeOn + T
          requires parameterConstraints ()
-         requires stateInvariant (state)
+         requires stateInvariant (state, event_queue)
          requires inter_event_invariant(state, event_queue)
          ensures (  ! dnsRequest && protecting (state, natTime)
                && (! (uniqueSig in state.preFilterSet))      )
                ==> ! forwarded   // Adaptive Protection, needs exactness
          ensures ! forwarded ==>                           // Harmlessness
                (  ! dnsRequest && (! (uniqueSig in state.preFilterSet))  )
-         ensures stateInvariant (state)
+         ensures stateInvariant (state, event_queue)
          ensures inter_event_invariant(state, event_queue)
       {
          if (dnsRequest) {  
@@ -189,12 +279,10 @@ module LucidProg refines LucidBase {
             // requires natTime >= lastNatTime
          requires dnsRequest
          requires parameterConstraints ()
-         requires stateInvariant (state)
          requires inter_event_invariant(state, event_queue)
 
          ensures dnsRequest
          ensures forwarded 
-         ensures stateInvariant (state)
          ensures inter_event_invariant(state, event_queue)
 
       {
@@ -209,6 +297,7 @@ module LucidProg refines LucidBase {
          (dnsRequest: bool, uniqueSig: nat)
                                                 returns (forwarded: bool)
          modifies this.state
+         modifies this`event_queue
          // requires time == natTime % T
          // Two packets can have the same timestamp.
             // requires natTime >= lastNatTime
@@ -220,7 +309,6 @@ module LucidProg refines LucidBase {
          requires ! dnsRequest
          requires state.preFilterSet == state.requestSet
          requires parameterConstraints ()
-         requires stateInvariant (state)
          requires inter_event_invariant(state, event_queue)
 
          ensures ! dnsRequest
@@ -229,7 +317,6 @@ module LucidProg refines LucidBase {
                ==> ! forwarded   // Adaptive Protection, needs exactness
          ensures ! forwarded ==>                           // Harmlessness
                (  ! dnsRequest && (! (uniqueSig in state.preFilterSet))  )
-         ensures stateInvariant (state)
          ensures inter_event_invariant(state, event_queue)
 
       {
@@ -271,6 +358,28 @@ module LucidProg refines LucidBase {
                   // generate SetFiltering (true);
                   // ELSE
                   state.recircSwitch := true;                           // ghost
+                  ghost var old_event_queue := event_queue;
+                  Generate(SetFiltering(true));
+                  // NOTE:
+                  // proof: after generating the event, there is only 1 setFiltering in the queue.
+                  // steps: 
+                  // 1. the event queue prior to the generate (old_event_queue) has no set filtering events. 
+                  // 2. the sequence of a single set filtering event has 1 set filtering event. 
+                  // 3. by "LemmaCountSumFilterSeq", old_event_queue+[SetFiltering(true)] has 1 set filtering event.
+                  // 4. the new event queue is equal to old_event_queue+[SetFiltering(true)]
+                  // 5. thus the new event queue has 1 set filtering event. 
+                  // NOTE: all you should _really_ need to do here is apply the lemma
+                  // assert count_f(old_event_queue, is_setfiltering) == 0;
+                  // assert count_f([SetFiltering(true)], is_setfiltering) == 1;
+                  LemmaCountSumFilterSeq(old_event_queue, [SetFiltering(true)], is_setfiltering);
+                  // assert count_f(old_event_queue + [SetFiltering(true)], is_setfiltering) == 1;
+                  // assert event_queue == old_event_queue + [SetFiltering(true)];
+                  assert count_f(event_queue, is_setfiltering) == 1;
+                  // NOTE: we also have to prove that there is only 1 setFiltering(true) event in the queue, 
+                  //       because of how the invariant is structured, using the same mechanism.
+                  LemmaCountSumFilterSeq(old_event_queue, [SetFiltering(true)], is_setfiltering_true);
+                  assert count_f(event_queue, is_setfiltering_true) == 1;
+
                   // FI
                }  // else recirc already generated, do nothing
             }
@@ -297,6 +406,15 @@ module LucidProg refines LucidBase {
                         // generate SetFiltering (false);
                         // ELSE
                         state.recircSwitch := false;                    // ghost
+                        ghost var old_event_queue := event_queue;
+                        Generate(SetFiltering(false));
+                        // NOTE: Lemma + old_event_queue proves that there is only 1 
+                        // setfiltering in the queue after the generate. Same 
+                        // steps as the earlier case where we generate SetFiltering(true)
+                        LemmaCountSumFilterSeq(old_event_queue, [SetFiltering(false)], is_setfiltering);
+                        assert count_f(event_queue, is_setfiltering) == 1;
+                        LemmaCountSumFilterSeq(old_event_queue, [SetFiltering(false)], is_setfiltering_false);
+                        assert count_f(event_queue, is_setfiltering_false) == 1;
                         // FI
                      }  // else recirc already generated, do nothing
                   }
@@ -323,14 +441,12 @@ module LucidProg refines LucidBase {
          requires protectImplmnt (state, time)
          requires state.preFilterSet == state.requestSet
          requires parameterConstraints ()
-         requires stateInvariant (state)
          requires inter_event_invariant(state, event_queue)
          ensures protectImplmnt (state, time)
          ensures (   (! (uniqueSig in state.preFilterSet))      )
                ==> ! forwarded   // Adaptive Protection, needs exactness
          ensures ! forwarded ==>                           // Harmlessness
                (  ! dnsRequest && (! (uniqueSig in state.preFilterSet))  )
-         ensures stateInvariant (state)
          ensures inter_event_invariant(state, event_queue)
       {
          forwarded := bloomFilterQuery (uniqueSig);               // memop
@@ -339,7 +455,14 @@ module LucidProg refines LucidBase {
          }
       }
 
-      method SetFiltering (on: bool)
+      lemma LemmaFilterHead<T>(es : seq<T>, f : T -> bool)
+         requires es != []
+         requires count_f(es, f) == 1
+         requires count_f([es[0]], f) == 1
+         ensures count_f(es[1..], f) == 0
+
+      method setFiltering (e : Event)
+         requires e.SetFiltering?
          modifies this.state
          // requires time_invariant()
          // requires on == state.recircSwitch      // parameter gets ghost variable
@@ -348,16 +471,25 @@ module LucidProg refines LucidBase {
          // requires natTime >= lastNatTime
          // requires state.recircPending
          requires parameterConstraints ()
-         requires stateInvariant (state)
-         requires inter_event_invariant(state, event_queue)
+         requires inter_event_invariant(state, [e] + event_queue)
          ensures ! state.recircPending
          // ensures time_invariant()
-         ensures stateInvariant(state)
          ensures inter_event_invariant(state, event_queue)
       {
+         // goal: prove that no other events in the queue can be setFiltering events. 
+         // steps: 
+         // 1. this is a setFiltering event.
+         // 2. by "LemmaCountSumGtFilterSeq" the current and pending events queue ([e] + event_queue) has at least one setFiltering.
+         // 3. by "inter_event_invariant", state.recircPending is true
+         // 4. by "inter_event_invariant", there is EXACTLY one setFiltering in ([e] + event_queue)
+         // 5. by dafny's automated solver, since [e] is a setFiltering, there are no setFiltering events in event_queue
+         assert count_f([e], is_setfiltering) == 1; // 
+         LemmaCountSumGtFilterSeq([e], event_queue, is_setfiltering);
+         assert count_f([e]+event_queue, is_setfiltering) >= 1; // so by the lemma, the "current and pending events" queue 
+         assert (state.recircPending);
 
-         var tmpFiltering : bool := on;               // get memop . . . .
-         state.filtering := on;                             // with update memop
+         var tmpFiltering : bool := e.on;               // get memop . . . .
+         state.filtering :=  e.on;                             // with update memop
          if tmpFiltering {
             var tmpTimeOn : bits := state.timeOn;           // get memop . . . .
             state.timeOn := time;                           // with update memop
@@ -368,6 +500,8 @@ module LucidProg refines LucidBase {
          else {
             state.recircPending := false;                        // update memop
             state.requestSet := {};                              // update memop
+            // we need to prove that there are no setfiltering events in the queue
+
          }
       }
 
@@ -376,8 +510,6 @@ module LucidProg refines LucidBase {
          modifies this.state // NEW
          modifies this
          requires parameterConstraints ()
-         requires stateInvariant (state)
-         ensures stateInvariant (state)
       { 
          state.filtering, state.recircPending := false, false;
          state.lastIntv, state.count, state.timeOn, state.actualTimeOn, state.natTimeOn := 0, 0, 0, 0,0;
