@@ -114,6 +114,12 @@ module LucidProg refines LucidBase {
 
       ghost predicate recircInvariant (state : State, events : seq<Event>) 
       reads state 
+      // this invariant is about the relationship between the recircPending 
+      // semaphore and the setFiltering events that may appear in the queue. 
+      // There are two parts to the invariant: 
+      // 1. when recircPending is true, the invariant asserts that there's only one setFiltering event in the queue
+      // 2. when there are setFiltering events in the queue, the invariant asserts that recircPending is true
+      // I _think_ that both "directions" are necessary to verify the program. (But, this could probably be cleaned up a lot.)
       {
          (
             if state.recircPending
@@ -145,7 +151,6 @@ module LucidProg refines LucidBase {
             )
          )
          &&
-         // we have to say something about "if there's a setfiltering in the queue, recircpending is true"
          (
             if ( count_f(events, is_setfiltering) >0)
             then (
@@ -155,26 +160,6 @@ module LucidProg refines LucidBase {
                state.recircPending == false
             )
          )
-         // &&
-         // (
-         //    // if the first event in the queue is a set filtering, none of the 
-         //    // other events are.
-         //    (|events|>0 && is_setfiltering(events[0])) 
-         //       ==> count_f(events[1..], is_setfiltering) == 0
-         // )
-      
-
-         // if (state.recircPending) then (
-         //    if (state.filtering) then (
-         //       count_f(events, is_setfiltering_true) == 1
-         //    )
-         //    else (
-         //       count_f(events, is_setfiltering_false) == 1
-         //    )
-         // )
-         // else (
-         //    count_f(events, is_setfiltering) == 0
-         // )
       }
 
       ghost predicate stateInvariant (state : State, es : seq<Event>)         // ghost
@@ -221,7 +206,6 @@ module LucidProg refines LucidBase {
 
       }
 
-   
       method Dispatch(e : Event) 
       {
          if 
@@ -230,10 +214,9 @@ module LucidProg refines LucidBase {
                var fwd := ProcessPacket(e.dnsRequest, e.uniqueSig);
 
             }
-            case e.PacketOut? => PacketOut();
+            case e.PacketOut? => {}
 
       }
-      method PacketOut() {}
 
       method ProcessPacket
          (dnsRequest: bool, uniqueSig: nat)
