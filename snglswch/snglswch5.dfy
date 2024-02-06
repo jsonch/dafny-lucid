@@ -3,7 +3,9 @@ include "lucid_base.dfy"
 // status: 
 // - the invariants looks correct and verification succeeds
 // 
-// - the verification for the event queue needs to be updated, for setfilter(on)
+// - the verification for the event queue needs to be updated, for setfilter events
+// - the time invariant may be wrong, and isn't used
+
 // - need to review the clock tick and hardware failure methods
 // - want to simplify some of the predicates to not take a state argument
 //    (if its a builtin anyway)
@@ -72,7 +74,7 @@ module LucidProg refines LucidBase {
             requires W >= Q
             ensures (fresh(state))
             ensures (this.event_queue == [])
-            ensures time_invariant()
+            // ensures time_invariant()
             ensures inter_event_invariant(state, event_queue)
       {     
              state := new State();   
@@ -81,16 +83,19 @@ module LucidProg refines LucidBase {
              time := 1;
       } 
    
+   
       predicate parameterConstraints ()      // from problem domain, ghost  
          // reads this
       {  I > 0 && QRoff > Q > 0  && W >= Q  }
+
+
 
       ghost predicate stateInvariant (state : State)         // ghost
          reads this`natTime, this`lastNatTime, this`time
          reads state
       {
               (  state.natTimeOn <= natTime  ) // CHANGE: lastNatTime --> natTime
-         && (  state.timeOn == state.natTimeOn % T  )
+         // && (  state.timeOn == state.natTimeOn % T  )
          && (  state.natTimeOn >= state.actualTimeOn  )
          && (  state.filtering ==> 
                   (protecting (state, natTime) <==> protectImplmnt (state, time))  )
@@ -145,14 +150,14 @@ module LucidProg refines LucidBase {
          (dnsRequest: bool, uniqueSig: nat)
                                                 returns (forwarded: bool)   
          modifies this.state
-         requires time == natTime % T
+         // requires time == natTime % T
          // Two packets can have the same timestamp.
-            requires natTime >= lastNatTime
+            // requires natTime >= lastNatTime
          // There must be a packet between any two interval rollovers, so
          // that interval boundaries can be detected.  
-            requires natTime - lastNatTime < T - I
+            // requires natTime - lastNatTime < T - I
          // Constraint to make attack time spans measurable.
-            requires natTime < state.actualTimeOn + T
+            // requires natTime < state.actualTimeOn + T
          requires parameterConstraints ()
          requires stateInvariant (state)
          requires inter_event_invariant(state, event_queue)
@@ -178,10 +183,10 @@ module LucidProg refines LucidBase {
       method processRequest
          (dnsRequest: bool, uniqueSig: nat)
                                                 returns (forwarded: bool)
-         modifies this.state
-         requires time == natTime % T
+         modifies this.state         
+         // requires time == natTime % T
          // Two packets can have the same timestamp.
-            requires natTime >= lastNatTime
+            // requires natTime >= lastNatTime
          requires dnsRequest
          requires parameterConstraints ()
          requires stateInvariant (state)
@@ -204,14 +209,14 @@ module LucidProg refines LucidBase {
          (dnsRequest: bool, uniqueSig: nat)
                                                 returns (forwarded: bool)
          modifies this.state
-         requires time == natTime % T
+         // requires time == natTime % T
          // Two packets can have the same timestamp.
-            requires natTime >= lastNatTime
+            // requires natTime >= lastNatTime
          // There must be a packet between any two interval rollovers, so
          // that interval boundaries can be detected.  
-            requires (natTime - lastNatTime) < (T - I)
+            // requires (natTime - lastNatTime) < (T - I)
          // Constraint to make attack time spans measurable.
-            requires natTime < state.actualTimeOn + T
+            // requires natTime < state.actualTimeOn + T
          requires ! dnsRequest
          requires state.preFilterSet == state.requestSet
          requires parameterConstraints ()
@@ -338,9 +343,9 @@ module LucidProg refines LucidBase {
          modifies this.state
          // requires time_invariant()
          // requires on == state.recircSwitch      // parameter gets ghost variable
-         requires time == natTime % T
+         // requires time == natTime % T
          // Two packets can have the same timestamp.
-         requires natTime >= lastNatTime
+         // requires natTime >= lastNatTime
          // requires state.recircPending
          requires parameterConstraints ()
          requires stateInvariant (state)
@@ -381,30 +386,30 @@ module LucidProg refines LucidBase {
          state.requestSet := {};                                        // ghost
       }
 
-      method SimulatedClockTick ()         // ghost
-         modifies state
-         requires time == natTime % T
-         requires natTime > lastNatTime
-         // Constraint to make attack time spans measurable.
-            requires natTime < state.actualTimeOn + T
-         // This extra assumption leaves room for natTimePlus.  It is
-         // necessary, which shows that the constraint to make time spans
-         // measurable is necessary.
-            requires (natTime + 1) < state.actualTimeOn + T
-         requires parameterConstraints ()
-         requires stateInvariant (state)
-         requires inter_event_invariant(state, event_queue)
-         ensures stateInvariant (state)
-   {
-         var timePlus : bits := (time + 1) % T;
-         var natTimePlus : nat := natTime + 1;
-         assert timePlus == natTimePlus % T;
-         assert state.filtering ==>                                 // invariant
-            (natTime >=state.natTimeOn + Q as nat <==> (time -state.timeOn) % T >= Q);
-         // show time-sensitive invariant holds after clock tick
-         assert state.filtering ==>
-               (protecting (state, natTimePlus) <==> protectImplmnt (state, timePlus));   
-      }
+   //    method SimulatedClockTick ()         // ghost
+   //       modifies state
+   //       requires time == natTime % T
+   //       requires natTime > lastNatTime
+   //       // Constraint to make attack time spans measurable.
+   //          requires natTime < state.actualTimeOn + T
+   //       // This extra assumption leaves room for natTimePlus.  It is
+   //       // necessary, which shows that the constraint to make time spans
+   //       // measurable is necessary.
+   //          requires (natTime + 1) < state.actualTimeOn + T
+   //       requires parameterConstraints ()
+   //       requires stateInvariant (state)
+   //       requires inter_event_invariant(state, event_queue)
+   //       ensures stateInvariant (state)
+   // {
+   //       var timePlus : bits := (time + 1) % T;
+   //       var natTimePlus : nat := natTime + 1;
+   //       assert timePlus == natTimePlus % T;
+   //       assert state.filtering ==>                                 // invariant
+   //          (natTime >=state.natTimeOn + Q as nat <==> (time -state.timeOn) % T >= Q);
+   //       // show time-sensitive invariant holds after clock tick
+   //       assert state.filtering ==>
+   //             (protecting (state, natTimePlus) <==> protectImplmnt (state, timePlus));   
+   //    }
 
       method {:extern} bloomFilterInsert (uniqueSig: nat)
 

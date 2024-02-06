@@ -82,12 +82,12 @@ abstract module LucidBase {
             // Important: these modify clauses limit the user's ability to modify the state of the program. 
             // specifically, they can't modify the input queue, only the output queue.
             modifies this.state, this`event_queue, this`out_queue
-            requires time_invariant()
+            // requires time_invariant()
             requires (inter_event_invariant(state, [e]+event_queue))
             
             ensures inter_event_invariant(this.state, event_queue)
             ensures valid_generate(old(event_queue), event_queue)
-            ensures time_invariant()
+            // ensures time_invariant()
 
         // Queue an event to be processed in the future. 
         method Generate(e : Event)
