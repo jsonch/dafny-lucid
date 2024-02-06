@@ -33,7 +33,7 @@ module LucidProg refines LucidBase {
       ghost var natTimeOn : nat
 
       ghost var preFilterSet : set<nat> // requestSet, before any deletion
-      ghost var recircSwitch : bool 
+      // ghost var recircSwitch : bool 
 
       constructor ()
             ensures (this.filtering == false)
@@ -172,10 +172,8 @@ module LucidProg refines LucidBase {
          && (  state.filtering ==> 
                   (protecting (state, natTime) <==> protectImplmnt (state, time))  )
          && (  ! state.filtering ==> state.requestSet == {}  )
-         && (  state.recircPending ==> (state.filtering == ! state.recircSwitch)  )
+         // && (  state.recircPending ==> (state.filtering == ! state.recircSwitch)  )
          && recircInvariant(state, es)
-         // TODO: the last part of this invariant, with the recirculation ghost variable, needs to be replaced with queue predicates
-         // state.recircSwitch means "there is a recirc event in the queue"
       }
 
       ghost predicate protecting (state : State, natTime : nat)  
@@ -211,7 +209,7 @@ module LucidProg refines LucidBase {
          if 
             case e.SetFiltering? => setFiltering(e);
             case e.ProcessPacket? => {
-               var fwd := ProcessPacket(e.dnsRequest, e.uniqueSig);
+               var fwd := ProcessPacket(e);
 
             }
             case e.PacketOut? => {}
@@ -219,8 +217,9 @@ module LucidProg refines LucidBase {
       }
 
       method ProcessPacket
-         (dnsRequest: bool, uniqueSig: nat)
-                                                returns (forwarded: bool)   
+         (e : Event)
+                                                returns (forwarded: bool)  
+         requires e.ProcessPacket? 
          modifies this.state
          modifies this`event_queue
          // requires time == natTime % T
@@ -233,23 +232,23 @@ module LucidProg refines LucidBase {
             // requires natTime < state.actualTimeOn + T
          requires parameterConstraints ()
          requires stateInvariant (state, event_queue)
-         requires inter_event_invariant(state, event_queue)
-         ensures (  ! dnsRequest && protecting (state, natTime)
-               && (! (uniqueSig in state.preFilterSet))      )
+         requires inter_event_invariant(state, [e] + event_queue)
+         ensures (  ! e.dnsRequest && protecting (state, natTime)
+               && (! (e.uniqueSig in state.preFilterSet))      )
                ==> ! forwarded   // Adaptive Protection, needs exactness
          ensures ! forwarded ==>                           // Harmlessness
-               (  ! dnsRequest && (! (uniqueSig in state.preFilterSet))  )
+               (  ! e.dnsRequest && (! (e.uniqueSig in state.preFilterSet))  )
          ensures stateInvariant (state, event_queue)
          ensures inter_event_invariant(state, event_queue)
       {
-         if (dnsRequest) {  
+         if (e.dnsRequest) {  
             forwarded := 
-               processRequest (dnsRequest, uniqueSig); 
+               processRequest (e.dnsRequest, e.uniqueSig); 
          }
          else {
             state.preFilterSet := state.requestSet;                           // ghost  
             forwarded := 
-            processReply (dnsRequest, uniqueSig); 
+            processReply (e.dnsRequest, e.uniqueSig); 
          }
       }
 
@@ -340,7 +339,7 @@ module LucidProg refines LucidBase {
                   // IF LUCID
                   // generate SetFiltering (true);
                   // ELSE
-                  state.recircSwitch := true;                           // ghost
+                  // state.recircSwitch := true;                           // ghost
                   ghost var old_event_queue := event_queue;
                   Generate(SetFiltering(true));
                   // NOTE:
@@ -388,7 +387,7 @@ module LucidProg refines LucidBase {
                         // IF LUCID
                         // generate SetFiltering (false);
                         // ELSE
-                        state.recircSwitch := false;                    // ghost
+                        // state.recircSwitch := false;                    // ghost
                         ghost var old_event_queue := event_queue;
                         Generate(SetFiltering(false));
                         // NOTE: Lemma + old_event_queue proves that there is only 1 
