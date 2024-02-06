@@ -1,4 +1,5 @@
 /*  1/31/24
+    TODO: update this
     This module encodes the semantics of event-based processing in Lucid. 
     To write a Lucid-compatible Dafny program, extend this module 
     with a concrete implementation that defines: 
@@ -31,6 +32,7 @@ TODO:
     1. figure out how to express the invariant "there's only ever one event matching f(e) in the queue"
     2. add in arrays + memops
 */
+
 
 abstract module LucidBase {
    type bits = x : int | 0 <= x < 256                 // number must match
@@ -72,7 +74,6 @@ abstract module LucidBase {
         var time : bits
         ghost var natTime : nat
         ghost var lastNatTime : nat
-        const T : nat := 256
         
         constructor()
             ensures (fresh(state))
@@ -91,22 +92,33 @@ abstract module LucidBase {
         // always hold on q.pre_handler_contents
         // hold on q.contents before and after handler execution
         ghost predicate inter_event_invariant(s : State, es : seq<Event>)
-            reads this`natTime, this`lastNatTime, this`time
             reads s
+            reads this`time, this`natTime, this`lastNatTime
+
+        ghost predicate time_invariant()
+            reads this`time, this`natTime, this`lastNatTime
 
 
-        // Dispatch is the entry point. It parses the event and calls the appropriate handler.
-        // It must be extended by the user to handle the events that they have defined. 
+        // A program must extend this function to handle events in a way that is 
+        // consistent with the inter event invariant. 
+        // Note that this function is not allowed to modify time variables.
         method Dispatch(e : Event)
-            // Important: these modify clauses limit the user's ability to modify the state of the program. 
-            // specifically, they can't modify the input queue, only the output queue.
             modifies this.state, this`event_queue, this`out_queue
-            // requires time_invariant()
+            requires time_invariant()
             requires (inter_event_invariant(state, [e]+event_queue))
-            
-            ensures inter_event_invariant(this.state, event_queue)
+            ensures time_invariant()
+            ensures inter_event_invariant(state, event_queue)
             // ensures valid_generate(old(event_queue), event_queue)
-            // ensures time_invariant()
+
+        // The program has to exend this function to update the clock in a way that 
+        // is consistent with its invariant.
+        method ClockTick()
+            modifies this`time, this`natTime, this`lastNatTime
+            requires time_invariant()
+            requires inter_event_invariant(state, event_queue)
+            ensures time_invariant()
+            ensures  inter_event_invariant(state, event_queue)
+
 
         // Queue an event to be processed in the future. 
         method Generate(e : Event)
@@ -118,73 +130,45 @@ abstract module LucidBase {
         // Queue an event to send out into the network.
         // I think this might be a noop.
         method Send(e : Event) 
-            // 
             modifies this`out_queue
             ensures out_queue == old(out_queue) + [e]
             {
                 out_queue := out_queue + [e];
             }
 
-        // TIME
-        /* 
-        There is a time invariant that always holds. Time gets updated 
-        in between event processing, in run.
-        */
-        ghost predicate time_invariant()
-            reads this`natTime, this`time, this`lastNatTime
-            {
-                natTime > lastNatTime && time == natTime % 256
-            }
-
         // run the program on event e and up to "r" recirculated events
         method Run(e : Event, r : int)
             modifies this.state, this`event_queue, this`out_queue, 
-            this`natTime, this`time // TIME
-            requires |event_queue| == 0
-            // TIME
-            requires natTime == 0
-            requires time == 0
-            requires lastNatTime == 0
+            this`natTime, this`time, this`lastNatTime
+            requires inter_event_invariant(state, event_queue)
             requires time_invariant()
-            requires inter_event_invariant(state, [e])
         {
             var i := 0;
-            event_queue := [e];
-            assert time == natTime;
-            // TIME
-            natTime := natTime + 1;
-            time := (time + 1)%T;
+            assert(inter_event_invariant(state, event_queue));
+            assert time_invariant();
             while(i < r)
-            invariant inter_event_invariant(state, event_queue) && time_invariant()
+            invariant inter_event_invariant(state, event_queue)
+            invariant time_invariant()
             {
+                // first, call the user-defined "Dispatch" function to handle the event. 
+                // the effects of dispatch are to: 
+                // 1. change state values; 2. change queue contents (current event gets dequeued automatically, more may be added by generate).
                 if (event_queue != []){
-                    // main execution loop: 
-                    // 1. dequeue an event
-                    // 2. dispatch the event, calling the appropriate handler
-                    // 3. push any generated events back onto the queue
-                    // we have to structure the code carefully to maintain the inter-event invariant.
-                    ghost var pre_dequeue := event_queue;
                     var e, new_event_queue := dequeue(event_queue);        
-                    assert (pre_dequeue == [e] + new_event_queue);
-                    assert (inter_event_invariant(state, pre_dequeue));                    
-                    assert (inter_event_invariant(state, [e]+new_event_queue));
                     event_queue := new_event_queue;
-                    assert (inter_event_invariant(state, [e]+event_queue));
                     Dispatch(e);
-                    // now, we have some generated events on output. 
-                    // Push them back to the input and make sure the invariant holds. 
-                    assert (inter_event_invariant(state, event_queue));
                 }
-                lastNatTime := natTime;
-                natTime := natTime + 1;
-                time := (time + 1)%T;
+                // now, call the user function to update time in a
+                // way that is consistent with the program's assumptions
+                ClockTick();
                 i := i + 1;
             }
         }
 
-        // misc helpers 
-        function seq_contains(es : seq<Event>, f : Event -> bool) : bool
-            {exists e :: f(e) && (e in es)}  
+
+        // function seq_contains(es : seq<Event>, f : Event -> bool) : bool
+        //     {exists e :: f(e) && (e in es)}  
+        // NOT NEEDED
         ghost predicate valid_generate(oldq : seq<Event>, newq : seq<Event>)
         {
             ((|oldq| - 1)<= |newq| <= |oldq|)
