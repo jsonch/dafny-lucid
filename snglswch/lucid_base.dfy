@@ -3,6 +3,8 @@
     This module encodes the semantics of event-based processing in Lucid. 
     To write a Lucid-compatible Dafny program, extend this module 
     with a concrete implementation that defines: 
+    --- OUTDATED: instructions below do not reflect 2/24 changes ---
+
     1. datatype Event
         - should include one datatype constructor for each event
     2. class State

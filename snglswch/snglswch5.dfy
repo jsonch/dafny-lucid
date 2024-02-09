@@ -15,7 +15,7 @@ module LucidProg refines LucidBase {
     datatype Event = 
       | SetFiltering(on : bool)
       | ProcessPacket(dnsRequest: bool, uniqueSig: nat)
-      | PacketOut()
+      | PacketOut() // optional.
 
     class State ... {
       // Address State 
@@ -26,14 +26,15 @@ module LucidProg refines LucidBase {
       var recircPending : bool          // a "semaphore" for recirculation
       ghost var requestSet : set<nat>   // pending requests, for filtering
 
-      ghost var actualTimeOn : nat
+      // ghost variables for reasoning about timeOn
+      ghost var actualTimeOn : nat 
       ghost var natTimeOn : nat
       const T : nat := 256
 
+      
+
       ghost var preFilterSet : set<nat> // requestSet, before any deletion
       // ghost var recircSwitch : bool 
-
-
 
       constructor ()
             ensures (this.filtering == false)
@@ -53,7 +54,6 @@ module LucidProg refines LucidBase {
          actualTimeOn, natTimeOn := 0, 0;
          requestSet := {};
       }
-
     }
    // Parameters
    const T : nat := 256
@@ -82,7 +82,6 @@ module LucidProg refines LucidBase {
              natTime, lastNatTime := 1, 0;
              time := 1;
       } 
-   
    
 
       predicate parameterConstraints ()      // from problem domain, ghost  
@@ -199,7 +198,9 @@ module LucidProg refines LucidBase {
          && recircInvariant(state, es)
       }
 
-
+      // NOTE: The inter-event invariant is a predicate over 
+      //    1. the state of the program and (s) 
+      //    2. the queue of pending events  (es)
       ghost predicate inter_event_invariant(s : State, es : seq<Event>)
       {
          parameterConstraints() && stateInvariant(s, es) 
@@ -226,9 +227,7 @@ module LucidProg refines LucidBase {
       }
 
 
-      method ProcessPacket
-         (e : Event)
-                                                returns (forwarded: bool)  
+      method ProcessPacket (e : Event) returns (forwarded: bool)  
          requires e.ProcessPacket? 
          modifies this.state
          modifies this`event_queue
