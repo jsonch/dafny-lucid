@@ -2,13 +2,10 @@ include "lucid_base.dfy"
 
 // status: 
 // - the invariants looks correct and verification succeeds
-// 
-// - the verification for the event queue needs to be updated, for setfilter events
-// - the time invariant may be wrong, and isn't used
 
 // - need to review the clock tick and hardware failure methods
-// - want to simplify some of the predicates to not take a state argument
-//    (if its a builtin anyway)
+// - can we simplify some of the invariants? particularly if they take arguments 
+//   that are members of their class
 // - need to use Arrays and the Array memop
 // - need to add "Send" and change the "forward" conditions to "send" conditions
 
