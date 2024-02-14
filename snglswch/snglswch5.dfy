@@ -1,5 +1,9 @@
 include "lucid_base.dfy"
 
+
+// latest step: remove references to this.time from all assertions / invariants
+// next step: not sure. want to relate time, time attached to each event, and inter_event_invariant
+//           also might want to get rid of time_invariant?
 // status: 
 // - the invariants looks correct and verification succeeds
 
@@ -56,7 +60,6 @@ module LucidProg refines LucidBase {
       }
     }
    // Parameters
-   const T : nat := 256
    const I : nat := 16                          // interval length, < T 
    const i : nat := 4                                        // I = 2^i
    const Q : bits                          // maximum DNS response time
@@ -65,6 +68,9 @@ module LucidProg refines LucidBase {
    const W : nat                      // Bloom-filter window size, >= Q
    const U : nat                               // upper count threshold
    const L : nat                               // lower count threshold
+
+
+
 
     class Handlers ... {
 
@@ -75,14 +81,28 @@ module LucidProg refines LucidBase {
             ensures (fresh(state))
             ensures (this.event_queue == [])
             // ensures time_invariant()
-            ensures inter_event_invariant(state, event_queue)
+            ensures inter_event_invariant(state, event_queue, time, natTime, lastNatTime)
       {     
              state := new State();   
              event_queue := [];
+             event_times := [];
              natTime, lastNatTime := 1, 0;
              time := 1;
       } 
    
+
+
+
+      /*** event times ***/
+      ghost predicate EventTimesInvariant(eventTimes: seq<EventTime>)
+         // the only thing we know is that EventTimesBase holds
+         // we are allowed to add other invariants that will be applied to the 
+         // event times sequences.
+         ensures  EventTimesBase(eventTimes)
+         {            
+            EventTimesBase(eventTimes)            
+         }
+
 
       predicate parameterConstraints ()      // from problem domain, ghost  
          // reads this
@@ -182,8 +202,7 @@ module LucidProg refines LucidBase {
       function interval (time: bits): bits
       {  time / I  }                           // implemented as time >> i
 
-      ghost predicate stateInvariant (state : State, es : seq<Event>)         // ghost
-         reads this`natTime, this`lastNatTime, this`time
+      ghost predicate stateInvariant (state : State, es : seq<Event>, time : bits, natTime : nat, lastNatTime : nat)         // ghost
          reads state
       {
          // CHANGE: lastNatTime --> natTime because it doesn't make sense in 
@@ -201,36 +220,39 @@ module LucidProg refines LucidBase {
       // NOTE: The inter-event invariant is a predicate over 
       //    1. the state of the program and (s) 
       //    2. the queue of pending events  (es)
-      ghost predicate inter_event_invariant(s : State, es : seq<Event>)
+      ghost predicate inter_event_invariant(s : State, es : seq<Event>, time : bits, natTime : nat, lastNatTime : nat)
       {
-         parameterConstraints() && stateInvariant(s, es) 
+         parameterConstraints() && stateInvariant(s, es, time, natTime, lastNatTime) 
          && (natTime - lastNatTime < T - I)
          && (natTime < s.actualTimeOn + T)
       }
 
-      // this is the invariant that must hold across clock ticks (and also during event processing)
-      ghost predicate time_invariant()
-         {
-               
-               natTime > lastNatTime // time advances
-            && time == natTime % 256 // time is natTime mod 256
-         }
 
-      method Dispatch(e : Event) 
+      // this is the invariant that must hold across clock ticks (and also during event processing)
+      // ghost predicate time_invariant()
+      //    {
+               
+      //          natTime > lastNatTime // time advances
+      //       && time == natTime % 256 // time is natTime mod 256
+      //    }
+
+
+      method Dispatch(e : Event, t : EventTime) 
       {
          if 
             case e.SetFiltering? => setFiltering(e);
             case e.ProcessPacket? => {
-               var fwd := ProcessPacket(e);
+               var fwd := processPacket(e);
             }
             case e.PacketOut? => {}
       }
 
 
-      method ProcessPacket (e : Event) returns (forwarded: bool)  
+      method processPacket (e : Event) returns (forwarded: bool)  
          requires e.ProcessPacket? 
          modifies this.state
          modifies this`event_queue
+         modifies this`event_times
          requires time == natTime % T
          // Two packets can have the same timestamp.
             requires natTime >= lastNatTime
@@ -240,13 +262,15 @@ module LucidProg refines LucidBase {
          // Constraint to make attack time spans measurable.
             requires natTime < state.actualTimeOn + T
          requires parameterConstraints ()
-         requires inter_event_invariant(state, [e] + event_queue)
+         requires inter_event_invariant(state, [e] + event_queue, time, natTime, lastNatTime)
+         requires |event_queue| == |event_times|
+         ensures  |event_queue| == |event_times|
          ensures (  ! e.dnsRequest && protecting (state, natTime)
                && (! (e.uniqueSig in state.preFilterSet))      )
                ==> ! forwarded   // Adaptive Protection, needs exactness
          ensures ! forwarded ==>                           // Harmlessness
                (  ! e.dnsRequest && (! (e.uniqueSig in state.preFilterSet))  )
-         ensures inter_event_invariant(state, event_queue)
+         ensures inter_event_invariant(state, event_queue, time, natTime, lastNatTime)
       {
          if (e.dnsRequest) {  
             forwarded := 
@@ -265,14 +289,15 @@ module LucidProg refines LucidBase {
          modifies this.state         
          requires time == natTime % T
          // Two packets can have the same timestamp.
-            requires natTime >= lastNatTime
+            // requires natTime >= lastNatTime
          requires dnsRequest
          requires parameterConstraints ()
-         requires inter_event_invariant(state, event_queue)
-
+         requires inter_event_invariant(state, [ProcessPacket(dnsRequest, uniqueSig)] + event_queue, time, natTime, lastNatTime)
+         requires |event_queue| == |event_times|
+         ensures  |event_queue| == |event_times|
          ensures dnsRequest
          ensures forwarded 
-         ensures inter_event_invariant(state, event_queue)
+         ensures inter_event_invariant(state, event_queue, time, natTime, lastNatTime)
 
       {
          var tmpFiltering : bool := state.filtering;                // get memop
@@ -282,14 +307,17 @@ module LucidProg refines LucidBase {
          forwarded := true;
       }
 
+
+
       method processReply 
          (dnsRequest: bool, uniqueSig: nat)
                                                 returns (forwarded: bool)
          modifies this.state
          modifies this`event_queue
+         modifies this`event_times
          requires time == natTime % T
          // Two packets can have the same timestamp.
-            requires natTime >= lastNatTime
+            // requires natTime >= lastNatTime
          // There must be a packet between any two interval rollovers, so
          // that interval boundaries can be detected.  
             requires (natTime - lastNatTime) < (T - I)
@@ -298,7 +326,9 @@ module LucidProg refines LucidBase {
          requires ! dnsRequest
          requires state.preFilterSet == state.requestSet
          requires parameterConstraints ()
-         requires inter_event_invariant(state, event_queue)
+         requires inter_event_invariant(state, [ProcessPacket(dnsRequest, uniqueSig)] + event_queue, time, natTime, lastNatTime)
+         requires |event_queue| == |event_times|
+         ensures  |event_queue| == |event_times|
 
          ensures ! dnsRequest
          ensures (  ! dnsRequest && protecting (state, natTime)
@@ -306,7 +336,7 @@ module LucidProg refines LucidBase {
                ==> ! forwarded   // Adaptive Protection, needs exactness
          ensures ! forwarded ==>                           // Harmlessness
                (  ! dnsRequest && (! (uniqueSig in state.preFilterSet))  )
-         ensures inter_event_invariant(state, event_queue)
+         ensures inter_event_invariant(state, event_queue, time, natTime, lastNatTime)
 
       {
          
@@ -397,7 +427,9 @@ module LucidProg refines LucidBase {
                         // ELSE
                         // state.recircSwitch := false;                    // ghost
                         ghost var old_event_queue := event_queue;
-                        Generate(SetFiltering(false));
+                        assert |event_queue| == |event_times|;
+                        Generate(SetFiltering(false));                        
+                        assert |event_queue| == |event_times|;
                         // NOTE: Lemma + old_event_queue proves that there is only 1 
                         // setfiltering in the queue after the generate. Same 
                         // steps as the earlier case where we generate SetFiltering(true)
@@ -429,13 +461,13 @@ module LucidProg refines LucidBase {
          requires protectImplmnt (state, time)
          requires state.preFilterSet == state.requestSet
          requires parameterConstraints ()
-         requires inter_event_invariant(state, event_queue)
+         requires inter_event_invariant(state, [ProcessPacket(dnsRequest, uniqueSig)] + event_queue, time, natTime, lastNatTime)
          ensures protectImplmnt (state, time)
          ensures (   (! (uniqueSig in state.preFilterSet))      )
                ==> ! forwarded   // Adaptive Protection, needs exactness
          ensures ! forwarded ==>                           // Harmlessness
                (  ! dnsRequest && (! (uniqueSig in state.preFilterSet))  )
-         ensures inter_event_invariant(state, event_queue)
+         ensures inter_event_invariant(state, event_queue, time, natTime, lastNatTime)
       {
          
          forwarded := bloomFilterQuery (uniqueSig);               // memop
@@ -460,10 +492,10 @@ module LucidProg refines LucidBase {
          requires natTime >= lastNatTime
          // requires state.recircPending // replaced with invariant condition
          requires parameterConstraints ()
-         requires inter_event_invariant(state, [e] + event_queue)
+         requires inter_event_invariant(state, [e] + event_queue, time, natTime, lastNatTime)
          // ensures ! state.recircPending // no longer matters, inlined into invariant
          // ensures time_invariant()
-         ensures inter_event_invariant(state, event_queue)
+         ensures inter_event_invariant(state, event_queue, time, natTime, lastNatTime)
       {
 
          // goal: prove that no other events in the queue can be setFiltering events. 
@@ -495,15 +527,17 @@ module LucidProg refines LucidBase {
          }
       }
 
+
+
       /******* clock ticks / time *******/
-      method ClockTick()
-      {
+      // method ClockTick()
+      // {
          
-         // TODO: if we wanted to run this program on a trace of input events, 
-         //       we'd need to fill this method with logic to update the timestamps 
-         //       in between events in a way that's consistent with the 
-         //       constraints of the program. (inter_event_invariant, mainly)
-      }
+      //    // TODO: if we wanted to run this program on a trace of input events, 
+      //    //       we'd need to fill this method with logic to update the timestamps 
+      //    //       in between events in a way that's consistent with the 
+      //    //       constraints of the program. (inter_event_invariant, mainly)
+      // }
 
       method HardwareFailure ()           // ghost
          modifies this.state // NEW
@@ -529,10 +563,10 @@ module LucidProg refines LucidBase {
          // measurable is necessary.
             requires (natTime + 1) < state.actualTimeOn + T
          requires parameterConstraints ()
-         requires time_invariant()
-         requires inter_event_invariant(state, event_queue)
-         ensures  time_invariant()
-         ensures inter_event_invariant(state, event_queue)
+         // requires time_invariant()
+         requires inter_event_invariant(state, event_queue, time, natTime, lastNatTime)
+         // ensures  time_invariant()
+         ensures inter_event_invariant(state, event_queue, time, natTime, lastNatTime)
    {
          var timePlus : bits := (time + 1) % T;
          var natTimePlus : nat := natTime + 1;
