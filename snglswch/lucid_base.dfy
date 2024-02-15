@@ -92,21 +92,47 @@ abstract module LucidBase {
         {
             forall i :: 0 <= i < |eventTimes| ==> eventTimes[i].time == eventTimes[i].natTime % T   
         }
-        ghost predicate EventTimesBase(eventTimes: seq<EventTime>)
-        {
-            TimeIsNonDecreasing(eventTimes) && TimestampIsCorrect(eventTimes)
+        ghost predicate TimeEqNatTime(time : bits, natTime : nat) {
+            time == natTime % T
         }
-        ghost predicate EventTimesInvariant(eventTimes: seq<EventTime>)
-        requires EventTimesBase(eventTimes)
-        ensures  EventTimesBase(eventTimes)
+        ghost predicate NatTimeOrder(natTime1 : nat, natTime2 : nat) {
+            natTime1 <= natTime2
+        }
+
+        ghost function base_inter_event_time_invariant(eventTimes: seq<EventTime>) : bool
+            // if the eventTimes is non-empty, then invariant holding for all the 
+            // event times must imply that the invariant holds for the tail of the 
+            // event times
+            // ensures base_inter_event_time_invariant(eventTimes) ==> 
+            ensures (|eventTimes| > 0) ==> base_inter_event_time_invariant(eventTimes) ==>  base_inter_event_time_invariant(eventTimes[1..])
+        {
+            match |eventTimes| {
+                // emtpy queue -- fine
+                case 0 => true
+                // 1 element in queue -- bit time must be correct
+                case 1 => 
+                        (eventTimes[0].time == eventTimes[0].natTime % T)
+                    &&  base_inter_event_time_invariant(eventTimes[1..])
+                // multiple elements in queue -- bit time must be correct and ordering preserved for first two elements
+                case _ => 
+                        (eventTimes[0].time == eventTimes[0].natTime % T)
+                    &&  (eventTimes[0].natTime <= eventTimes[1].natTime)
+                    &&  base_inter_event_time_invariant(eventTimes[1..])
+            }
+        }
+
+        ghost function user_inter_event_time_invariant(eventTimes : seq<EventTime>) : bool
+            // the user-provided event timing invariant must preserve the 
+            // base event timing invariant
+            // ensures (inter_event_time_invariant(eventTimes) ==> base_inter_event_time_invariant(eventTimes))
+            ensures (|eventTimes| > 0) ==> user_inter_event_time_invariant(eventTimes) ==> user_inter_event_time_invariant(eventTimes[1..])
 
 
-        // predicate base_event_times()
-        //     reads this`event_times
-        //     {
-                
-        //     }
-
+        ghost predicate event_timing_invariant(eventTimes : seq<EventTime>)
+        {
+            base_inter_event_time_invariant(eventTimes)
+            && user_inter_event_time_invariant(eventTimes)
+        } 
 
         // this should: 
         // always hold on q.pre_handler_contents
@@ -117,9 +143,9 @@ abstract module LucidBase {
         // ghost predicate time_invariant()
         //     reads this`time, this`natTime, this`lastNatTime
 
-        ghost predicate queue_invariant(s : State, es : seq<Event>, time : bits, natTime : nat, lastNatTime : nat)
-            reads this`event_queue
-            ensures inter_event_invariant(s, es, time, natTime, lastNatTime)
+        // ghost predicate queue_invariant(s : State, es : seq<Event>, time : bits, natTime : nat, lastNatTime : nat)
+        //     reads this`event_queue
+        //     ensures inter_event_invariant(s, es, time, natTime, lastNatTime)
 
 
         constructor()
@@ -128,6 +154,7 @@ abstract module LucidBase {
             ensures time == natTime % T
             ensures natTime >= lastNatTime
             ensures (|this.event_times| == |this.event_queue|)
+            ensures event_timing_invariant(this.event_times)
 
             // ensures time_invariant()
         //     // ensures (inter_event_invariant(state, event_queue))
@@ -138,7 +165,16 @@ abstract module LucidBase {
         //      natTime, lastNatTime := 1, 0;
         //      time := 1;
         //     }
-            
+
+        // the next queued event doesn't run before the current time
+        ghost predicate next_event_is_later(ev_times : seq<EventTime>)
+        reads this`natTime
+        {
+            match |ev_times| {
+                case 0 => true
+                case _ => ev_times[0].natTime >= natTime
+            }
+        }    
         // run the program on event e and up to "r" recirculated events
         method Run(e : Event, r : int)
             modifies this.state, this`event_queue, this`out_queue, this`event_times,
@@ -146,6 +182,8 @@ abstract module LucidBase {
             requires |event_queue| == |event_times|
             requires time == natTime % T
             requires natTime >= lastNatTime
+            requires next_event_is_later(event_times)
+            requires event_timing_invariant(event_times)
             requires inter_event_invariant(state, event_queue, this.time, this.natTime, this.lastNatTime)
             // requires time_invariant()
         {
@@ -157,23 +195,33 @@ abstract module LucidBase {
             invariant time == natTime % T
             invariant natTime >= lastNatTime
             invariant |event_queue| == |event_times|
-            // invariant time_invariant()
+            invariant event_timing_invariant(event_times)
+            // invariant next_event_is_later(event_times)
             {
                 // call the user-defined "Dispatch" function to handle the event. 
                 // the effects of dispatch are to: 
                 // 1. change state values; 2. change queue contents (current event gets dequeued automatically, more may be added by generate).
                 if (event_queue != []){
+                    // assert event_timing_invariant(event_times);
                     var e, new_event_queue := dequeue(event_queue);     
-                    var et, new_event_times := dequeue(event_times);   
+                    var et, new_event_times := dequeue(event_times); 
+                    // assert inter_event_time_invariant(new_event_times);  
+                    // update time vars
+                    // lastNatTime := natTime;
+                    // natTime := et.natTime;
+                    // time := et.time;
+                    assert time == natTime % T;
                     event_queue := new_event_queue;
                     event_times := new_event_times;
+                    // assert event_timing_invariant(event_times);
+                    // assert events_run_later(event_times);
+                    // assert inter_event_time_invariant(event_times);  
                     Dispatch(e, et);
+
                 }
                 i := i + 1;
             }
         }
-
-
 
         // A program must extend this function to handle events in a way that is 
         // consistent with the inter event invariant. 
@@ -184,12 +232,15 @@ abstract module LucidBase {
             requires time == natTime % T
             requires natTime >= lastNatTime
             requires |event_queue| == |event_times|
-
+            requires event_timing_invariant(event_times)
             requires (inter_event_invariant(state, [e]+event_queue, this.time, this.natTime, this.lastNatTime))
+            // requires  next_event_is_later([t] + event_times)
             // ensures time_invariant()
+            ensures event_timing_invariant(event_times)
             ensures time == natTime % T
             ensures natTime >= lastNatTime
             ensures |event_queue| == |event_times|
+            // ensures inter_event_time_invariant(event_times)
             ensures inter_event_invariant(state, event_queue, this.time, this.natTime, this.lastNatTime)
             // ensures valid_generate(old(event_queue), event_queue)
 

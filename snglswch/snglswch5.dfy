@@ -89,18 +89,16 @@ module LucidProg refines LucidBase {
              natTime, lastNatTime := 1, 0;
              time := 1;
       } 
-   
-
-
 
       /*** event times ***/
-      ghost predicate EventTimesInvariant(eventTimes: seq<EventTime>)
-         // the only thing we know is that EventTimesBase holds
-         // we are allowed to add other invariants that will be applied to the 
-         // event times sequences.
-         ensures  EventTimesBase(eventTimes)
-         {            
-            EventTimesBase(eventTimes)            
+      ghost predicate inter_event_time_invariant(eventTimes: seq<EventTime>)
+         {   
+
+            match |eventTimes| {
+               case 0 => true
+               case _ => base_inter_event_time_invariant(eventTimes)
+
+            }
          }
 
 
@@ -248,6 +246,7 @@ module LucidProg refines LucidBase {
       }
 
 
+
       method processPacket (e : Event) returns (forwarded: bool)  
          requires e.ProcessPacket? 
          modifies this.state
@@ -264,6 +263,8 @@ module LucidProg refines LucidBase {
          requires parameterConstraints ()
          requires inter_event_invariant(state, [e] + event_queue, time, natTime, lastNatTime)
          requires |event_queue| == |event_times|
+         requires event_timing_invariant(event_times)
+         ensures  event_timing_invariant(event_times)
          ensures  |event_queue| == |event_times|
          ensures (  ! e.dnsRequest && protecting (state, natTime)
                && (! (e.uniqueSig in state.preFilterSet))      )
@@ -294,6 +295,8 @@ module LucidProg refines LucidBase {
          requires parameterConstraints ()
          requires inter_event_invariant(state, [ProcessPacket(dnsRequest, uniqueSig)] + event_queue, time, natTime, lastNatTime)
          requires |event_queue| == |event_times|
+         requires event_timing_invariant(event_times)
+         ensures  event_timing_invariant(event_times)
          ensures  |event_queue| == |event_times|
          ensures dnsRequest
          ensures forwarded 
@@ -306,7 +309,6 @@ module LucidProg refines LucidBase {
             state.requestSet := state.requestSet + { uniqueSig }; }           // ghost
          forwarded := true;
       }
-
 
 
       method processReply 
@@ -328,6 +330,8 @@ module LucidProg refines LucidBase {
          requires parameterConstraints ()
          requires inter_event_invariant(state, [ProcessPacket(dnsRequest, uniqueSig)] + event_queue, time, natTime, lastNatTime)
          requires |event_queue| == |event_times|
+         requires event_timing_invariant(event_times)
+         ensures  event_timing_invariant(event_times)
          ensures  |event_queue| == |event_times|
 
          ensures ! dnsRequest
