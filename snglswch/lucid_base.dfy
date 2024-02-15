@@ -185,7 +185,6 @@ abstract module LucidBase {
             requires next_event_is_later(event_times)
             requires event_timing_invariant(event_times)
             requires inter_event_invariant(state, event_queue, this.time, this.natTime, this.lastNatTime)
-            // requires time_invariant()
         {
             var i := 0;
             assert(inter_event_invariant(state, event_queue, this.time, this.natTime, this.lastNatTime));
@@ -204,13 +203,22 @@ abstract module LucidBase {
                 if (event_queue != []){
                     // assert event_timing_invariant(event_times);
                     var e, new_event_queue := dequeue(event_queue);     
-                    var et, new_event_times := dequeue(event_times); 
+                    var et, new_event_times := dequeue(event_times);
+                    /*
+                        inter_event_inv(events, time) ==> 
+                            // the inter event invariant starts with the current event before dispatch, 
+                            // and the next event after dispatch. 
+
+                    */
+                    assert(inter_event_invariant(state, event_queue, this.time, this.natTime, this.lastNatTime));
+                    // assert(inter_event_invariant(state, event_queue, et.time, et.natTime, this.natTime));
                     // assert inter_event_time_invariant(new_event_times);  
                     // update time vars
                     // lastNatTime := natTime;
                     // natTime := et.natTime;
                     // time := et.time;
                     assert time == natTime % T;
+                    assert(inter_event_invariant(state, event_queue, this.time, this.natTime, this.lastNatTime));
                     event_queue := new_event_queue;
                     event_times := new_event_times;
                     // assert event_timing_invariant(event_times);
