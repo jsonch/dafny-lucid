@@ -31,8 +31,7 @@
 
 
 TODO: 
-    1. figure out how to express the invariant "there's only ever one event matching f(e) in the queue"
-    2. add in arrays + memops
+    1. add in arrays + memops
 */
 
 
@@ -75,10 +74,10 @@ abstract module LucidBase {
         var last_event_nattime : nat // the arrival time of the last event queued thus far
         var out_queue : seq<Event>
         
-        // time-related state
-        var time : bits
-        ghost var natTime : nat
         ghost var lastNatTime : nat
+
+        ghost var natTime : nat
+        ghost var time : bits
 
         /******* event time predicates  *******/
 
@@ -126,12 +125,10 @@ abstract module LucidBase {
         // hold on q.contents before and after handler execution
         ghost predicate inter_event_invariant(s : State, es : seq<Event>, ts : seq<EventTime>, lastNatTime : nat)
             reads s
-
+        
         constructor()
             ensures (fresh(state))
             ensures (this.event_queue == [])
-            ensures time == natTime % T
-            ensures natTime >= lastNatTime
             ensures (|this.event_times| == |this.event_queue|)
             ensures event_timing_invariant(this.event_times)
 
@@ -142,30 +139,35 @@ abstract module LucidBase {
         //      time := 1;
         //     }
 
-        // run the program on event e and up to "r" recirculated events
-        method Run(e : Event, r : int)
+        // run the program on the event queue for up to "r" events
+        method Run(r : int)
             modifies this.state, this`event_queue, this`out_queue, this`event_times,
-            this`natTime, this`time, this`lastNatTime
+            this`lastNatTime, this`natTime, this`time
+            requires |event_queue| >  0
             requires |event_queue| == |event_times|
+            requires time == event_times[0].time
+            requires natTime == event_times[0].natTime
+            requires lastNatTime < natTime
             requires event_timing_invariant(event_times)
-            requires inter_event_invariant(state, event_queue, event_times, this.lastNatTime)
+            requires inter_event_invariant(state, event_queue, event_times, lastNatTime)
         {
             var i := 0;
-            assert(inter_event_invariant(state, event_queue, event_times, this.lastNatTime));
-            // assert time_invariant();
+            assert(inter_event_invariant(state, event_queue, event_times, lastNatTime));
             while(i < r)
-            invariant inter_event_invariant(state, event_queue, event_times, this.lastNatTime)
+            invariant inter_event_invariant(state, event_queue, event_times, lastNatTime)
             invariant |event_queue| == |event_times|
             invariant event_timing_invariant(event_times)
-            // invariant next_event_is_later(event_times)
             {
                 if (event_queue != []){
                     var e, new_event_queue := dequeue(event_queue);     
                     var et, new_event_times := dequeue(event_times);
 
-                    assert inter_event_invariant(state, event_queue, event_times, this.lastNatTime);
+                    assert inter_event_invariant(state, event_queue, event_times, lastNatTime);
                     event_queue := new_event_queue;
                     event_times := new_event_times;
+                    // before dispatch, time == et.time and natTime == et.natTime
+                    time := et.time; 
+                    natTime := et.natTime;
                     Dispatch(e, et);
                     lastNatTime := et.natTime;
 
@@ -177,6 +179,10 @@ abstract module LucidBase {
         // A program must extend this function to handle events in a way that is 
         // consistent with the inter event invariant. 
         // Note that this function is not allowed to modify time variables.
+        // dispatch ensures that invariants hold for the state that the system
+        // will be in after the current iteration of the run loop completes. 
+        // So the system may not yet be in that "state" when dispatch finishes, 
+        // but it will be soon.
         method Dispatch(e : Event, t : EventTime)
             modifies this.state, this`event_queue, this`out_queue, this`event_times
             // requires time_invariant()
@@ -189,7 +195,7 @@ abstract module LucidBase {
             ensures (old(this.event_queue) == this.event_queue[0..|old(this.event_queue)|])
             ensures inter_event_invariant(state, event_queue, event_times, t.natTime) // CHANGE: this now holds with the _next_ lastNatTime
             ensures |event_queue| == |event_times|
-            ensures |old(this.event_times)| <= |this.event_times|            
+            ensures |old(this.event_times)| <= |this.event_times|
             ensures (old(this.event_times) == this.event_times[0..|old(this.event_times)|])
             ensures |event_times| > 0 ==> t.natTime <= event_times[0].natTime
             // why the above line is here:
@@ -207,19 +213,6 @@ abstract module LucidBase {
             */
 
             ensures event_timing_invariant(event_times)
-
-            // ensures inter_event_time_invariant(event_times)
-            // ensures valid_generate(old(event_queue), event_queue)
-
-        // The program has to exend this function to update the clock in a way that 
-        // is consistent with its invariant.
-        // method ClockTick()
-        //     modifies this`time, this`natTime, this`lastNatTime
-        //     requires time_invariant()
-        //     requires inter_event_invariant(state, event_queue, this.time, this.natTime, this.lastNatTime)
-        //     ensures time_invariant()
-        //     ensures  inter_event_invariant(state, event_queue, this.time, this.natTime, this.lastNatTime)
-
 
         // Queue an event to be processed 1 time-unit after the last event in the queue. 
         method Generate(e : Event)
