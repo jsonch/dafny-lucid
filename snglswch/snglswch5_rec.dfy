@@ -1,14 +1,14 @@
-include "lucid_base.dfy"
+include "lucid_base_rec.dfy"
 
-// update to use lucid_base_rec.dfy
 
 
 module LucidProg refines LucidBase {
 
     datatype Event = 
-      | SetFiltering(on : bool)
-      | ProcessPacket(dnsRequest: bool, uniqueSig: nat)
-      | PacketOut() // optional.
+      | NOOP()
+      // | SetFiltering(on : bool)
+      // | ProcessPacket(dnsRequest: bool, uniqueSig: nat)
+      // | PacketOut() // optional.
 
     class State ... {
       // Address State 
@@ -58,9 +58,6 @@ module LucidProg refines LucidBase {
    const U : nat                               // upper count threshold
    const L : nat                               // lower count threshold
 
-
-
-
     class Handlers ... {
 
       constructor init ()
@@ -68,534 +65,35 @@ module LucidProg refines LucidBase {
             requires QRoff > Q
             requires W >= Q
             ensures (fresh(state))
-            ensures (this.event_queue == [])
-            // ensures time_invariant()
-            ensures inter_event_invariant(state, event_queue, time, natTime, lastNatTime)
+            // does not establish inter-event invariant
+            // because the event queue is empty
       {     
              state := new State();   
-             event_queue := [];
-             event_times := [];
-             natTime, lastNatTime := 1, 0;
-             time := 1;
+             queue := [];
       } 
 
-      /*** event times ***/
-      ghost predicate inter_event_time_invariant(eventTimes: seq<EventTime>)
-         {   
-
-            match |eventTimes| {
-               case 0 => true
-               case _ => base_inter_event_time_invariant(eventTimes)
-
-            }
-         }
-
-
       predicate parameterConstraints ()      // from problem domain, ghost  
-         // reads this
       {  I > 0 && QRoff > Q > 0  && W >= Q  }
 
-      function is_setfiltering (e : Event) : bool 
+
+      ghost predicate valid_next_event(cur : LocEvent, next : LocEvent)
       {
-         match e {
-            case SetFiltering(_) => true
-            case _ => false
-         }
-      }
-      function is_setfiltering_true (e : Event) : bool 
-      {
-         match e {
-            case SetFiltering(true) => true
-            case _ => false
-         }
-      }
-      function is_setfiltering_false (e : Event) : bool 
-      {
-         match e {
-            case SetFiltering(false) => true
-            case _ => false
-         }
+         next.natTime - cur.natTime < T - I
       }
 
+      ghost predicate inter_event_invariant(s : State, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
 
-      ghost predicate recircInvariant (state : State, events : seq<Event>) 
-      reads state 
-      // this invariant is about the relationship between the recircPending 
-      // semaphore and the setFiltering events that may appear in the queue. 
-      // There are two parts to the invariant: 
-      // 1. when recircPending is true, the invariant asserts that there's only one setFiltering event in the queue
-      // 2. when there are setFiltering events in the queue, the invariant asserts that recircPending is true
-      // I _think_ that both "directions" are necessary to verify the program. (But, this could probably be cleaned up a lot.)
       {
-         (
-            if state.recircPending
-            then 
-            (
-               (|events| > 0)
-               &&
-               count_f(events, is_setfiltering) == 1
-               &&
-               (
-                  if state.filtering
-                  then
-                  (
-                     count_f(events, is_setfiltering_false) == 1
-                  )
-                  else
-                  (
-                     count_f(events, is_setfiltering_true) == 1
-                  )
-               )
-            )
-            else 
-            (
-               count_f(events, is_setfiltering) == 0
-               && 
-               count_f(events, is_setfiltering_false) == 0
-               && 
-               count_f(events, is_setfiltering_true) == 0
-            )
-         )
-         &&
-         (
-            if ( count_f(events, is_setfiltering) >0)
-            then (
-               state.recircPending == true
-            )
-            else (
-               state.recircPending == false
-            )
-         )
-      }
-
-
-      ghost predicate protecting (state : State, natTime : nat)  
-      reads state                        // ghost
-      {  state.filtering && (natTime >= state.natTimeOn + Q as nat)  }
-
-      predicate protectImplmnt (state : State, time: bits)
-      // protecting is a specification, using history variables.  This
-      // is its implementation, which cannot use history variables.
-      reads state
-      {  state.filtering && elapsedTime (time, state.timeOn) >= Q  } 
-
-      function elapsedTime (now: bits, origin: bits): (res: bits)
-         // Function satisfies specification because of mod arithmetic.
-            ensures now >= origin ==> res == (now - origin)
-            ensures now < origin ==>                     // 0 is T as bits
-               res == (now + T - origin)
-      {  (now - origin) % T  }    // implemented as bit-vector subtraction  
-
-      function interval (time: bits): bits
-      {  time / I  }                           // implemented as time >> i
-
-      ghost predicate stateInvariant (state : State, es : seq<Event>, time : bits, natTime : nat, lastNatTime : nat)         // ghost
-         reads state
-      {
-         // CHANGE: lastNatTime --> natTime because it doesn't make sense in 
-         //         SetFiltering (it sets natTimeOn to the current time, not the last time)
-              (  state.natTimeOn <= natTime  ) 
-         && (  state.timeOn == state.natTimeOn % T  )
-         && (  state.natTimeOn >= state.actualTimeOn  )
-         && (  state.filtering ==> 
-                  (protecting (state, natTime) <==> protectImplmnt (state, time))  )
-         && (  ! state.filtering ==> state.requestSet == {}  )
-         // && (  state.recircPending ==> (state.filtering == ! state.recircSwitch)  )
-         && recircInvariant(state, es)
-      }
-
-      // NOTE: The inter-event invariant is a predicate over 
-      //    1. the state of the program and (s) 
-      //    2. the queue of pending events  (es)
-      ghost predicate inter_event_invariant(s : State, es : seq<Event>, time : bits, natTime : nat, lastNatTime : nat)
-      {
-         parameterConstraints() && stateInvariant(s, es, time, natTime, lastNatTime) 
+         var natTime := cur_ev.natTime;
+         parameterConstraints()
          && (natTime - lastNatTime < T - I)
-         && (natTime < s.actualTimeOn + T)
       }
 
-
-      // this is the invariant that must hold across clock ticks (and also during event processing)
-      // ghost predicate time_invariant()
-      //    {
-               
-      //          natTime > lastNatTime // time advances
-      //       && time == natTime % 256 // time is natTime mod 256
-      //    }
-
-
-      method Dispatch(e : Event, t : EventTime) 
+      method Dispatch(cur_ev : LocEvent)
       {
-         if 
-            case e.SetFiltering? => setFiltering(e);
-            case e.ProcessPacket? => {
-               var fwd := processPacket(e);
-            }
-            case e.PacketOut? => {}
+         if
+            case cur_ev.e.NOOP? => {}
       }
-
-
-
-      method processPacket (e : Event) returns (forwarded: bool)  
-         requires e.ProcessPacket? 
-         modifies this.state
-         modifies this`event_queue
-         modifies this`event_times
-         requires time == natTime % T
-         // Two packets can have the same timestamp.
-            requires natTime >= lastNatTime
-         // There must be a packet between any two interval rollovers, so
-         // that interval boundaries can be detected.  
-            requires natTime - lastNatTime < T - I
-         // Constraint to make attack time spans measurable.
-            requires natTime < state.actualTimeOn + T
-         requires parameterConstraints ()
-         requires inter_event_invariant(state, [e] + event_queue, time, natTime, lastNatTime)
-         requires |event_queue| == |event_times|
-         requires event_timing_invariant(event_times)
-         ensures  event_timing_invariant(event_times)
-         ensures  |event_queue| == |event_times|
-         ensures (  ! e.dnsRequest && protecting (state, natTime)
-               && (! (e.uniqueSig in state.preFilterSet))      )
-               ==> ! forwarded   // Adaptive Protection, needs exactness
-         ensures ! forwarded ==>                           // Harmlessness
-               (  ! e.dnsRequest && (! (e.uniqueSig in state.preFilterSet))  )
-         ensures inter_event_invariant(state, event_queue, time, natTime, lastNatTime)
-      {
-         if (e.dnsRequest) {  
-            forwarded := 
-               processRequest (e.dnsRequest, e.uniqueSig); 
-         }
-         else {
-            state.preFilterSet := state.requestSet;                           // ghost  
-            forwarded := 
-            processReply (e.dnsRequest, e.uniqueSig); 
-         }
-      }
-
-      method processRequest
-         (dnsRequest: bool, uniqueSig: nat)
-                                                returns (forwarded: bool)
-         modifies this.state         
-         requires time == natTime % T
-         // Two packets can have the same timestamp.
-            // requires natTime >= lastNatTime
-         requires dnsRequest
-         requires parameterConstraints ()
-         requires inter_event_invariant(state, [ProcessPacket(dnsRequest, uniqueSig)] + event_queue, time, natTime, lastNatTime)
-         requires |event_queue| == |event_times|
-         requires event_timing_invariant(event_times)
-         ensures  event_timing_invariant(event_times)
-         ensures  |event_queue| == |event_times|
-         ensures dnsRequest
-         ensures forwarded 
-         ensures inter_event_invariant(state, event_queue, time, natTime, lastNatTime)
-
-      {
-         var tmpFiltering : bool := state.filtering;                // get memop
-         if (tmpFiltering) {  
-            bloomFilterInsert (uniqueSig);                        // memop
-            state.requestSet := state.requestSet + { uniqueSig }; }           // ghost
-         forwarded := true;
-      }
-
-
-      method processReply 
-         (dnsRequest: bool, uniqueSig: nat)
-                                                returns (forwarded: bool)
-         modifies this.state
-         modifies this`event_queue
-         modifies this`event_times
-         requires time == natTime % T
-         // Two packets can have the same timestamp.
-            // requires natTime >= lastNatTime
-         // There must be a packet between any two interval rollovers, so
-         // that interval boundaries can be detected.  
-            requires (natTime - lastNatTime) < (T - I)
-         // Constraint to make attack time spans measurable.
-            requires natTime < state.actualTimeOn + T
-         requires ! dnsRequest
-         requires state.preFilterSet == state.requestSet
-         requires parameterConstraints ()
-         requires inter_event_invariant(state, [ProcessPacket(dnsRequest, uniqueSig)] + event_queue, time, natTime, lastNatTime)
-         requires |event_queue| == |event_times|
-         requires event_timing_invariant(event_times)
-         ensures  event_timing_invariant(event_times)
-         ensures  |event_queue| == |event_times|
-
-         ensures ! dnsRequest
-         ensures (  ! dnsRequest && protecting (state, natTime)
-               && (! (uniqueSig in state.preFilterSet))    )
-               ==> ! forwarded   // Adaptive Protection, needs exactness
-         ensures ! forwarded ==>                           // Harmlessness
-               (  ! dnsRequest && (! (uniqueSig in state.preFilterSet))  )
-         ensures inter_event_invariant(state, event_queue, time, natTime, lastNatTime)
-
-      {
-         
-      // Changes to measurement state:
-      // Increment or reset count.  If there is an interval with no reply
-      // packets, then the count will not be reset for that interval.
-      // However, the count will never include replies from more than one
-      // interval.
-         var oldCount : nat := 0;
-         var tmpCount : nat;
-         var tmpLastIntv : bits := state.lastIntv;          // get memop . . . .
-         state.lastIntv := interval (time);                 // with update memop 
-         if interval (time) != tmpLastIntv {
-            oldCount := state.count;
-            tmpCount := 1;                            // get memop . . . .
-            state.count := 1;                               // with update memop
-         }
-         else {  
-            tmpCount := state.count + 1;                    // get memop . . . .
-            state.count := state.count + 1;                       // with update memop
-         }
-
-      // Changes to filtering state:
-      // Filtering is turned on as soon as count reaches upper threshold.
-      // (Note that in !filtering test of count, it should never exceed U, 
-      // so this is defensive programming.)  There is no declarative 
-      // specification of turning filtering off,  so we make the code as 
-      // readable as possible.
-         var tmpFiltering : bool := state.filtering;                // get memop
-         var tmpTimeOn : bits;
-         var tmpRecircPending : bool;
-         if ! tmpFiltering {
-            if tmpCount >= U {
-               // time to turn filtering on
-               tmpRecircPending := state.recircPending;     // get memop . . . .
-               state.recircPending := true;                 // with update memop
-               if ! tmpRecircPending {
-                  // IF LUCID
-                  // generate SetFiltering (true);
-                  // ELSE
-                  // state.recircSwitch := true;                           // ghost
-                  ghost var old_event_queue := event_queue;
-                  Generate(SetFiltering(true));
-                  // NOTE:
-                  // proof: after generating the event, there is only 1 setFiltering in the queue.
-                  // steps: 
-                  // 1. the event queue prior to the generate (old_event_queue) has no set filtering events. 
-                  // 2. the sequence of a single set filtering event has 1 set filtering event. 
-                  // 3. by "LemmaCountSumFilterSeq", old_event_queue+[SetFiltering(true)] has 1 set filtering event.
-                  // 4. the new event queue is equal to old_event_queue+[SetFiltering(true)]
-                  // 5. thus the new event queue has 1 set filtering event. 
-                  // NOTE: all you should _really_ need to do here is apply the lemma
-                  // assert count_f(old_event_queue, is_setfiltering) == 0;
-                  // assert count_f([SetFiltering(true)], is_setfiltering) == 1;
-                  LemmaCountSumFilterSeq(old_event_queue, [SetFiltering(true)], is_setfiltering);
-                  // assert count_f(old_event_queue + [SetFiltering(true)], is_setfiltering) == 1;
-                  // assert event_queue == old_event_queue + [SetFiltering(true)];
-                  assert count_f(event_queue, is_setfiltering) == 1;
-                  // NOTE: we also have to prove that there is only 1 setFiltering(true) event in the queue, 
-                  //       because of how the invariant is structured, using the same mechanism.
-                  LemmaCountSumFilterSeq(old_event_queue, [SetFiltering(true)], is_setfiltering_true);
-                  assert count_f(event_queue, is_setfiltering_true) == 1;
-
-                  // FI
-               }  // else recirc already generated, do nothing
-            }
-         }
-         else { // filtering
-            if oldCount != 0 { // interval boundary crossed
-               if oldCount >= L {
-                  if elapsedTime (time, state.timeOn) >= Q        // get memop .
-                     {  tmpTimeOn := (time - Q) % T;  }     // . . . . . .
-                  else { tmpTimeOn := state.timeOn; }             // . . . . . .
-                  if elapsedTime (time, state.timeOn) >= Q {      // with update
-                     state.timeOn := (time - Q) % T;              // memop 
-                    state.natTimeOn := natTime - Q;                    // ghost
-                  }                                           
-               }
-               else { // oldCount < L
-                  tmpTimeOn := state.timeOn;                        // get memop
-                  if elapsedTime (time, tmpTimeOn) >= QRoff {
-                     // time to turn filtering off
-                     tmpRecircPending := state.recircPending;//get memop . . . .
-                     state.recircPending := true;           // with update memop
-                     if ! tmpRecircPending {
-                        // IF LUCID
-                        // generate SetFiltering (false);
-                        // ELSE
-                        // state.recircSwitch := false;                    // ghost
-                        ghost var old_event_queue := event_queue;
-                        assert |event_queue| == |event_times|;
-                        Generate(SetFiltering(false));                        
-                        assert |event_queue| == |event_times|;
-                        // NOTE: Lemma + old_event_queue proves that there is only 1 
-                        // setfiltering in the queue after the generate. Same 
-                        // steps as the earlier case where we generate SetFiltering(true)
-                        LemmaCountSumFilterSeq(old_event_queue, [SetFiltering(false)], is_setfiltering);
-                        assert count_f(event_queue, is_setfiltering) == 1;
-                        LemmaCountSumFilterSeq(old_event_queue, [SetFiltering(false)], is_setfiltering_false);
-                        assert count_f(event_queue, is_setfiltering_false) == 1;
-                        // FI
-                     }  // else recirc already generated, do nothing
-                  }
-               }  
-            } // end boundary-crossing case
-            else {  tmpTimeOn := state.timeOn; }                    // get memop
-         } // end filtering case
-
-      // Filtering decision:
-      // if filtering off, it won't matter that timeOn not read
-         if tmpFiltering && elapsedTime (time, tmpTimeOn) >= Q {
-            forwarded := filter (dnsRequest, uniqueSig);
-         }
-         else {  forwarded := true; }
-
-      }
-      method filter
-         (dnsRequest: bool, uniqueSig: nat) 
-                                                returns (forwarded: bool)  
-         modifies this.state
-         requires ! dnsRequest
-         requires protectImplmnt (state, time)
-         requires state.preFilterSet == state.requestSet
-         requires parameterConstraints ()
-         requires inter_event_invariant(state, [ProcessPacket(dnsRequest, uniqueSig)] + event_queue, time, natTime, lastNatTime)
-         ensures protectImplmnt (state, time)
-         ensures (   (! (uniqueSig in state.preFilterSet))      )
-               ==> ! forwarded   // Adaptive Protection, needs exactness
-         ensures ! forwarded ==>                           // Harmlessness
-               (  ! dnsRequest && (! (uniqueSig in state.preFilterSet))  )
-         ensures inter_event_invariant(state, event_queue, time, natTime, lastNatTime)
-      {
-         
-         forwarded := bloomFilterQuery (uniqueSig);               // memop
-         if forwarded {      // if positive is false, has no effect; ghost
-            state.requestSet := state.requestSet - { uniqueSig };             // ghost
-         }
-      }
-
-      lemma LemmaFilterHead<T>(es : seq<T>, f : T -> bool)
-         requires es != []
-         requires count_f(es, f) == 1
-         requires count_f([es[0]], f) == 1
-         ensures count_f(es[1..], f) == 0
-
-      method setFiltering (e : Event)
-         requires e.SetFiltering?
-         modifies this.state
-         // requires time_invariant()
-         // requires on == state.recircSwitch      // parameter gets ghost variable
-         requires time == natTime % T
-         // Two packets can have the same timestamp.
-         requires natTime >= lastNatTime
-         // requires state.recircPending // replaced with invariant condition
-         requires parameterConstraints ()
-         requires inter_event_invariant(state, [e] + event_queue, time, natTime, lastNatTime)
-         // ensures ! state.recircPending // no longer matters, inlined into invariant
-         // ensures time_invariant()
-         ensures inter_event_invariant(state, event_queue, time, natTime, lastNatTime)
-      {
-
-         // goal: prove that no other events in the queue can be setFiltering events. 
-         // steps: 
-         // 1. this is a setFiltering event.
-         // 2. by "LemmaCountSumGtFilterSeq" the current and pending events queue ([e] + event_queue) has at least one setFiltering.
-         // 3. by "inter_event_invariant", state.recircPending is true
-         // 4. by "inter_event_invariant", there is EXACTLY one setFiltering in ([e] + event_queue)
-         // 5. by dafny's automated solver, since [e] is a setFiltering, there are no setFiltering events in event_queue
-         assert count_f([e], is_setfiltering) == 1; // 
-         LemmaCountSumGtFilterSeq([e], event_queue, is_setfiltering);
-         assert count_f([e]+event_queue, is_setfiltering) >= 1; // so by the lemma, the "current and pending events" queue 
-         assert (state.recircPending);
-
-         var tmpFiltering : bool := e.on;               // get memop . . . .
-         state.filtering :=  e.on;                             // with update memop
-         if tmpFiltering {
-            var tmpTimeOn : bits := state.timeOn;           // get memop . . . .
-            state.timeOn := time;                           // with update memop
-            state.actualTimeOn := natTime;                              // ghost
-            state.natTimeOn := natTime;                                 // ghost
-            state.recircPending := false;                        // update memop
-         }
-         else {
-            state.recircPending := false;                        // update memop
-            state.requestSet := {};                              // update memop
-            // we need to prove that there are no setfiltering events in the queue
-
-         }
-      }
-
-
-
-      /******* clock ticks / time *******/
-      // method ClockTick()
-      // {
-         
-      //    // TODO: if we wanted to run this program on a trace of input events, 
-      //    //       we'd need to fill this method with logic to update the timestamps 
-      //    //       in between events in a way that's consistent with the 
-      //    //       constraints of the program. (inter_event_invariant, mainly)
-      // }
-
-      method HardwareFailure ()           // ghost
-         modifies this.state // NEW
-         modifies this
-         requires parameterConstraints ()
-      { 
-         
-         state.filtering, state.recircPending := false, false;
-         state.lastIntv, state.count, state.timeOn, state.actualTimeOn, state.natTimeOn := 0, 0, 0, 0,0;
-         state.actualTimeOn, state.natTimeOn := 0, 0;                         // ghost
-         lastNatTime := natTime;                                  // ghost
-         state.requestSet := {};                                        // ghost
-      }
-
-      method SimulatedClockTick ()         // ghost
-         modifies state
-         requires time == natTime % T
-         requires natTime > lastNatTime
-         // Constraint to make attack time spans measurable.
-            requires natTime < state.actualTimeOn + T
-         // This extra assumption leaves room for natTimePlus.  It is
-         // necessary, which shows that the constraint to make time spans
-         // measurable is necessary.
-            requires (natTime + 1) < state.actualTimeOn + T
-         requires parameterConstraints ()
-         // requires time_invariant()
-         requires inter_event_invariant(state, event_queue, time, natTime, lastNatTime)
-         // ensures  time_invariant()
-         ensures inter_event_invariant(state, event_queue, time, natTime, lastNatTime)
-   {
-         var timePlus : bits := (time + 1) % T;
-         var natTimePlus : nat := natTime + 1;
-         assert timePlus == natTimePlus % T;
-         assert state.filtering ==>                                 // invariant
-            (natTime >=state.natTimeOn + Q as nat <==> (time -state.timeOn) % T >= Q);
-         // show time-sensitive invariant holds after clock tick
-         assert state.filtering ==>
-               (protecting (state, natTimePlus) <==> protectImplmnt (state, timePlus));   
-      }
-
-
-
-      method {:extern} bloomFilterInsert (uniqueSig: nat)
-
-      method {:extern} bloomFilterQuery (uniqueSig: nat)
-                                                   returns (inSet: bool)
-      // No false negatives:
-      // A sliding-window Bloom filter automatically deletes set members
-      // shortly after a guaranteed tenancy W.  You might imagine that
-      // this would be a source of false negatives.  However, it is not,
-      // because a request never needs to stay in the set longer than Q,
-      // where Q <= W.
-         ensures uniqueSig in state.requestSet ==> inSet
-      // No false positives:
-      // Not true, but used to prove Adaptive Protection as a sanity
-      // check.  (If deleted, Adaptive Protection cannot be proved.)  This
-      // property can be false for two reasons: (1) it is the nature of
-      // a Bloom filter to yield false positives sometimes; (2) in a
-      // sliding-window Bloom filter, there are no timely deletions, just
-      // scheduled timeouts which can be delayed.
-         ensures ! (uniqueSig in state.requestSet) ==> (! inSet)
-
-
-
-
 
     }
 
