@@ -3,7 +3,8 @@ include "lucid_base_rec.dfy"
 module LucidProg refines LucidBase {
 
     datatype Event = 
-      | NOOP()
+      // | NOOP()
+      | ProcessPacket(dnsRequest: bool, uniqueSig: nat)
       
       // | SetFiltering(on : bool)
       // | ProcessPacket(dnsRequest: bool, uniqueSig: nat)
@@ -80,13 +81,16 @@ module LucidProg refines LucidBase {
          next.natTime - cur.natTime < T - I
       }
 
+
       /*** the inter-event invariant ***/
       ghost predicate inter_event_invariant(s : State, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
-
       {
          var natTime := cur_ev.natTime;
          parameterConstraints()
          && (natTime - lastNatTime < T - I)
+         // && (natTime < s.actualTimeOn + T) // TODO: I don't understand this predicate.
+         // Seems like there are some input sequences that are valid, 
+         // but for which this would not hold
       }
       ghost predicate stateInvariant (state : State, es : seq<Event>, time : bits, natTime : nat, lastNatTime : nat)         // ghost
          reads state
@@ -124,9 +128,42 @@ module LucidProg refines LucidBase {
          assert cur_ev.natTime == this.natTime;
          assert this.time == (this.natTime % T);
          if
-            case cur_ev.e.NOOP? => {}
+            // case cur_ev.e.NOOP? => {}
+            case cur_ev.e.ProcessPacket? => {
+               var fwd := processPacket(cur_ev);
+            }
       }
 
+      method processPacket (cur_ev : LocEvent) returns (forwarded: bool)  
+         modifies this.state, this`queue
+         requires cur_ev.e.ProcessPacket? 
+         requires valid_event_queue([cur_ev] + this.queue)
+         requires inter_event_invariant(state, cur_ev, this.queue, this.lastNatTime)
+         requires cur_ev.natTime == this.natTime
+
+         /* pasting in requirements from old version -- TODO: what's necessary? */
+         requires time == natTime % T
+         requires natTime >= lastNatTime
+         requires natTime - lastNatTime < T - I
+
+         // ensures (  ! cur_ev.e.dnsRequest && protecting (state, natTime)
+         //       && (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
+         //       ==> ! forwarded   // Adaptive Protection, needs exactness
+         // ensures ! forwarded ==>                           // Harmlessness
+         //       (  ! e.dnsRequest && (! (e.uniqueSig in state.preFilterSet))  )
+         ensures post_dispatch(state, queue, natTime)
+         // requires natTime < state.actualTimeOn + T // See note in inter-event invariant
+         ensures  valid_event_queue([cur_ev] + this.queue)
+      {
+         forwarded := false;
+         // 
+         valid_event_queue_implies_valid_head([cur_ev] + this.queue);
+         assert (
+            |queue| > 0 ==> 
+               (inter_event_invariant(state, queue[0], queue[1..], natTime))
+         );
+         
+      }
     }
 
 

@@ -29,6 +29,15 @@ abstract module LucidBase {
         /***   user-defined predicates   ***/
         // an invariant over the last event that was processed, the current event, and the remaining events
         ghost predicate inter_event_invariant(s : State, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
+            reads s
+
+        // post_dispatch must hold at the end of every event handler's execution
+        ghost predicate post_dispatch(s : State, updated_queue : seq<LocEvent>, processed_event_natTime : nat)
+            reads s
+        {
+                |updated_queue| > 0 ==> 
+                        inter_event_invariant(s, updated_queue[0], updated_queue[1..], processed_event_natTime)            
+        }
         // a predicate that must hold over the entire event queue before and after 
         // dispatch, that defines the pairs of events that we may see
         ghost predicate valid_next_event(cur : LocEvent, next : LocEvent)
@@ -44,10 +53,15 @@ abstract module LucidBase {
                 ev_queue[i].time == (ev_queue[i].natTime % T))
         }
 
+        // if the queue has at least 2 events, 
+        // the second event is a valid event to come after the first
         lemma valid_event_queue_implies_valid_head(ev_queue : seq<LocEvent>)
             requires valid_event_queue(ev_queue)
-            requires |ev_queue| > 1
-            ensures valid_next_event(ev_queue[0], ev_queue[1])
+            ensures (match |ev_queue| {
+                case 0 => true
+                case 1 => true
+                case _ => valid_next_event(ev_queue[0], ev_queue[1])})
+
 
         lemma valid_event_queue_implies_valid_tail(ev_queue : seq<LocEvent>)
             requires valid_event_queue(ev_queue)
@@ -112,7 +126,6 @@ abstract module LucidBase {
             }
         }
 
-
         method Dispatch(cur_ev : LocEvent)
             modifies this.state, this`queue
             // at the start of dispatch, the user event invariant must hold for the current event
@@ -121,6 +134,7 @@ abstract module LucidBase {
             requires valid_event_queue([cur_ev] + this.queue)
             requires this.natTime == cur_ev.natTime
             requires this.time    == this.natTime % T
+            requires this.natTime >= this.lastNatTime
             // after processing, if the queue has more items in it to process, 
             // then the user event invariant holds over:
             //   - the new state
@@ -129,15 +143,18 @@ abstract module LucidBase {
             // essentially, this is saying: 
             //   no matter what the next event is, the invariant will hold in 
             //   the current state and the remaining event queue
-            ensures (
-                |queue| > 0 ==> 
-                    (forall ev : LocEvent | valid_next_event(cur_ev, ev) :: inter_event_invariant(this.state, ev, this.queue[1..], cur_ev.natTime))
-            )
+            // ensures (
+            //     |queue| > 0 ==> 
+            //         (forall ev : LocEvent | valid_next_event(cur_ev, ev) :: inter_event_invariant(this.state, ev, this.queue[1..], cur_ev.natTime))
+            // )
+            /* 
+                maybe we can do something weaker / simpler: 
+                if there's an event in the queue, then it must be a valid next event and the inter-event invariant must hold?
+            */
+            ensures post_dispatch(state, queue, natTime)
             // and the event must still be part of a valid sequence of events
+            // is this necessary any more?
             ensures  valid_event_queue([cur_ev] + this.queue)
-
-
-
 
     }
 
