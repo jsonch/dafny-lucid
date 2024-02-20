@@ -61,12 +61,19 @@ abstract module LucidBase {
                 case 0 => true
                 case 1 => true
                 case _ => valid_next_event(ev_queue[0], ev_queue[1])})
-
-
         lemma valid_event_queue_implies_valid_tail(ev_queue : seq<LocEvent>)
             requires valid_event_queue(ev_queue)
-            requires |ev_queue| > 1
+            requires |ev_queue| > 0
             ensures valid_event_queue(ev_queue[1..])
+        lemma valid_queue_append(ev_queue : seq<LocEvent>, ev : LocEvent)
+            requires valid_event_queue(ev_queue)
+            requires |ev_queue| > 0 ==> valid_next_event(ev_queue[|ev_queue|-1], ev)
+            ensures valid_event_queue(ev_queue + [ev])            
+
+        lemma valid_queue_prepend(ev : LocEvent, ev_queue : seq<LocEvent>)
+            requires valid_event_queue(ev_queue)
+            requires |ev_queue| > 0 ==> valid_next_event(ev, ev_queue[0])
+            ensures valid_event_queue([ev] + ev_queue)            
 
         lemma valid_event_queue_implies_valid_time(ev_queue : seq<LocEvent>)
             requires valid_event_queue(ev_queue)
@@ -156,6 +163,50 @@ abstract module LucidBase {
             // is this necessary any more?
             ensures  valid_event_queue([cur_ev] + this.queue)
 
+
+        function next_generate_time(cur_natTime : nat, q : seq<LocEvent>) : nat
+        {
+            match (|q|) {
+                case 0 => cur_natTime
+                case _ => q[(|q|-1)].natTime
+            }
+        }
+
+        var gen__out_natTime : nat
+        // TODO: the verification in generate is complicated and somewhat disorganized. 
+        // How much is necessary?
+        method Generate(cur_ev : LocEvent, e : Event, out_natTime : nat)
+            requires valid_event_queue([cur_ev]+queue)
+            // if the queue is non-empty, then this is a valid event to attach at the end of it
+            requires |queue| > 0 ==> valid_next_event(queue[|queue|-1], LocEvent(e, out_natTime % T, out_natTime))
+            // if the queue is empty, the event is valid to arrive immediately after the current event
+            requires |queue| == 0 ==> valid_next_event(cur_ev, LocEvent(e, out_natTime % T, out_natTime))
+            modifies this`queue
+            ensures valid_event_queue([cur_ev] + queue)
+            // ensures valid_event_queue_implies_valid_head([cur_ev] + this.queue)
+        {
+            var out_ev   := LocEvent(e, out_natTime % T, out_natTime);
+            // how do we know that this random event is a valid next event, 
+            // we don't know what the condition is.
+            assert (|queue| > 0 ==> valid_next_event(queue[|queue|-1], out_ev)  );
+
+            var new_queue   := queue + [out_ev];
+            valid_event_queue_implies_valid_tail([cur_ev]+queue);                        
+            valid_queue_append(queue, out_ev);
+            valid_event_queue_implies_valid_head([cur_ev] + queue);
+            assert |queue| > 0 ==> valid_next_event(cur_ev, queue[0]);
+            queue := new_queue;
+            assert valid_next_event(cur_ev, queue[0]);
+            assert valid_event_queue(queue);
+            valid_queue_prepend(cur_ev, queue);
+            assert valid_event_queue([cur_ev] + queue);
+            // we've changed the queue. So we have to prove that the condition still holds.                         
+            valid_event_queue_implies_valid_head([cur_ev] + this.queue);
+
+
+        }
     }
+
+
 
 }
