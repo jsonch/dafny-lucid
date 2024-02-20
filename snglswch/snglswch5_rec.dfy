@@ -1,11 +1,10 @@
 include "lucid_base_rec.dfy"
 
-
-
 module LucidProg refines LucidBase {
 
     datatype Event = 
       | NOOP()
+      
       // | SetFiltering(on : bool)
       // | ProcessPacket(dnsRequest: bool, uniqueSig: nat)
       // | PacketOut() // optional.
@@ -81,6 +80,7 @@ module LucidProg refines LucidBase {
          next.natTime - cur.natTime < T - I
       }
 
+      /*** the inter-event invariant ***/
       ghost predicate inter_event_invariant(s : State, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
 
       {
@@ -88,9 +88,41 @@ module LucidProg refines LucidBase {
          parameterConstraints()
          && (natTime - lastNatTime < T - I)
       }
+      ghost predicate stateInvariant (state : State, es : seq<Event>, time : bits, natTime : nat, lastNatTime : nat)         // ghost
+         reads state
+      {
+         // CHANGE: lastNatTime --> natTime because it doesn't make sense in 
+         //         SetFiltering (it sets natTimeOn to the current time, not the last time)
+              (  state.natTimeOn <= natTime  ) 
+         && (  state.timeOn == state.natTimeOn % T  )
+         && (  state.natTimeOn >= state.actualTimeOn  )
+         && (  state.filtering ==> 
+                  (protecting (state, natTime) <==> protectImplmnt (state, time))  )
+         && (  ! state.filtering ==> state.requestSet == {}  )
+         // && (  state.recircPending ==> (state.filtering == ! state.recircSwitch)  )
+         // && recircInvariant(state, es) // TODO: add recircInvariant back in
+      }
+      ghost predicate protecting (state : State, natTime : nat)  
+      reads state                        // ghost
+      {  state.filtering && (natTime >= state.natTimeOn + Q as nat)  }
+
+      predicate protectImplmnt (state : State, time: bits)
+      // protecting is a specification, using history variables.  This
+      // is its implementation, which cannot use history variables.
+      reads state
+      {  state.filtering && elapsedTime (time, state.timeOn) >= Q  } 
+
+      function elapsedTime (now: bits, origin: bits): (res: bits)
+         // Function satisfies specification because of mod arithmetic.
+            ensures now >= origin ==> res == (now - origin)
+            ensures now < origin ==>                     // 0 is T as bits
+               res == (now + T - origin)
+      {  (now - origin) % T  }    // implemented as bit-vector subtraction  
 
       method Dispatch(cur_ev : LocEvent)
       {
+         assert cur_ev.natTime == this.natTime;
+         assert this.time == (this.natTime % T);
          if
             case cur_ev.e.NOOP? => {}
       }

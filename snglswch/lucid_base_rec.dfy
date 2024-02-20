@@ -18,6 +18,11 @@ abstract module LucidBase {
         // state and event queue are mutable for user-facing abstractions
         var state : State
         var queue : seq<LocEvent> // event * timestamp
+
+        var time    : bits // We need time as a class variable because we want an 
+                           // imperative way of getting the current time in the program code. 
+                           // i.e., in Lucid, we don't "look at the timestamp on the event", 
+                           // we call "Sys.time()"
         var natTime : nat
         var lastNatTime : nat
 
@@ -49,6 +54,11 @@ abstract module LucidBase {
             requires |ev_queue| > 1
             ensures valid_event_queue(ev_queue[1..])
 
+        lemma valid_event_queue_implies_valid_time(ev_queue : seq<LocEvent>)
+            requires valid_event_queue(ev_queue)
+            requires |ev_queue| > 0
+            ensures  ev_queue[0].time == ev_queue[0].natTime % T
+
         constructor ()
 
         method ProcessEvent(i : nat, eq : seq<LocEvent>) returns (j : nat)
@@ -57,8 +67,11 @@ abstract module LucidBase {
             requires inter_event_invariant(this.state, eq[0], eq[1..], lastNatTime)
             requires lastNatTime <= eq[0].natTime
             requires this.natTime == eq[0].natTime
-            modifies this`queue, this`state, this`lastNatTime, this`natTime
+            requires this.time == eq[0].time
+            modifies this`queue, this.state, this`lastNatTime, this`natTime, this`time
         {
+            valid_event_queue_implies_valid_time(eq);
+            assert (eq[0].time == eq[0].natTime % T);
             if (i <= 0) {
                 j := 0;
             }
@@ -93,6 +106,7 @@ abstract module LucidBase {
                     // so now we can just update the times and recurse!
                     this.lastNatTime := natTime;
                     this.natTime := queue[0].natTime;
+                    this.time := queue[0].time;
                     j := ProcessEvent(i-1, this.queue);
                 }
             }
@@ -100,11 +114,13 @@ abstract module LucidBase {
 
 
         method Dispatch(cur_ev : LocEvent)
-            modifies this`state, this`queue
+            modifies this.state, this`queue
             // at the start of dispatch, the user event invariant must hold for the current event
             requires inter_event_invariant(this.state, cur_ev, this.queue, this.lastNatTime)
             // and the event must be part of a valid sequence of events
             requires valid_event_queue([cur_ev] + this.queue)
+            requires this.natTime == cur_ev.natTime
+            requires this.time    == this.natTime % T
             // after processing, if the queue has more items in it to process, 
             // then the user event invariant holds over:
             //   - the new state
