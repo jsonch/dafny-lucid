@@ -142,6 +142,14 @@ class AddressState
               (  ! dnsRequest && (! (uniqueSig in preFilterSet))  )
       ensures stateInvariant (time, natTime)
    {
+      assert (
+         (
+         natTimeOn == 629
+         && 
+         natTime == 1148)
+         ==> 0 == 1
+      );
+
       if (dnsRequest) {  
          forwarded := 
             processRequest (time, natTime, dnsRequest, uniqueSig); 
@@ -351,3 +359,4 @@ class AddressState
    // scheduled timeouts which can be delayed.
       ensures ! (uniqueSig in requestSet) ==> (! inSet)
 }
+
