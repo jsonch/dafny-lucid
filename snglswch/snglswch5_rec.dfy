@@ -196,6 +196,11 @@ module LucidProg refines LucidBase {
          ev.natTime < gs.natTimeOn + T
       }
 
+      lemma greater_time_on_preserves_valid_event_time(gs_old : GhostState, gs_new : GhostState, evs : seq<LocEvent>)
+         requires gs_new.natTimeOn >= gs_old.natTimeOn 
+         requires (forall i | 0 <= i < |evs| :: valid_event_time(gs_old, evs[i]))
+         ensures (forall i | 0 <= i < |evs| :: valid_event_time(gs_new, evs[i]))
+
 
       method processReply (cur_ev : LocEvent) returns (forwarded: bool)
          modifies this.state, this`queue, this`gstate
@@ -216,10 +221,10 @@ module LucidProg refines LucidBase {
                && (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
                ==> ! forwarded   // Adaptive Protection, needs exactness
 
-         // ensures valid_timestamps([cur_ev] + queue)
-         // ensures ordered_timestamps([cur_ev] + queue)
-         // ensures valid_next_events([cur_ev] + this.queue)
-         // ensures valid_event_times(this.state, [cur_ev] + this.queue)
+         ensures valid_timestamps([cur_ev] + queue)
+         ensures ordered_timestamps([cur_ev] + queue)
+         ensures valid_next_events([cur_ev] + this.queue)
+         // ensures valid_event_times(this.gstate, [cur_ev] + this.queue)
          // ensures post_dispatch(state, queue, natTime)
 
       {
@@ -286,10 +291,16 @@ module LucidProg refines LucidBase {
                   if elapsedTime (time, state.timeOn) >= Q {      // with update
                      assert natTime - Q >= 0;
                      state.timeOn := (time - Q) % T;              // memop 
-                     gstate := gstate.(natTimeOn := natTime - Q); // ghost
+                     assert valid_event_times(this.gstate, [cur_ev] + this.queue);
 
+                     var new_gstate := gstate.(natTimeOn := natTime - Q); // ghost
+                     assert gstate.natTimeOn <= new_gstate.natTimeOn;
+                     assert valid_event_time(new_gstate, cur_ev);
+                     greater_time_on_preserves_valid_event_time(gstate, new_gstate, [cur_ev] + this.queue);
+                     gstate := new_gstate;
+                     assert valid_event_times(this.gstate, [cur_ev] + this.queue);
                      // gstate.natTimeOn := natTime - Q;                    // ghost
-                  }                                           
+                  }
                }
                else { // oldCount < L
                   tmpTimeOn := state.timeOn;                        // get memop

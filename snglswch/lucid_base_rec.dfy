@@ -54,6 +54,13 @@ abstract module LucidBase {
                 case _ => valid_event_time(gs, ev_queue[0]) && valid_event_times(gs, ev_queue[1..])                
             }
         }
+        lemma valid_event_times_implies_forall(gs : GhostState, ev_queue : seq<LocEvent>)
+            requires valid_event_times(gs, ev_queue)
+            ensures (forall i | 0 <= i < |ev_queue| :: valid_event_time(gs, ev_queue[i]))
+        lemma forall_implies_valid_event_times(gs : GhostState, ev_queue : seq<LocEvent>)
+            requires (forall i | 0 <= i < |ev_queue| :: valid_event_time(gs, ev_queue[i]))
+            ensures valid_event_times(gs, ev_queue)
+
 
 
         lemma valid_event_times_app(gs : GhostState, ev_queue : seq<LocEvent>, ev : LocEvent) 
