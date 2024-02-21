@@ -2,45 +2,36 @@ include "lucid_base_rec.dfy"
 
 module LucidProg refines LucidBase {
 
-   datatype Event = 
+    datatype Event = 
       // | NOOP()
       | ProcessPacket(dnsRequest: bool, uniqueSig: nat)
       | SetFiltering(on : bool)
-
+      
       // | SetFiltering(on : bool)
       // | ProcessPacket(dnsRequest: bool, uniqueSig: nat)
       // | PacketOut() // optional.
 
-
-   datatype GState = 
-      | GState(requestSet : set<nat>, actualTimeOn : nat , natTimeOn : nat , preFilterSet : set<nat>)
-   // class GState ... {
-   //    ghost var requestSet : set<nat>   // pending requests, for filtering
-   //    // ghost variables for reasoning about timeOn
-   //    ghost var actualTimeOn : nat 
-   //    ghost var natTimeOn : nat    
-   //    ghost var preFilterSet : set<nat> // requestSet, before any deletion
-   //    // ghost var recircSwitch : bool 
-
-   //    ghost constructor ()
-   //          ensures actualTimeOn == 0
-   //          ensures natTimeOn == 0
-   //          ensures requestSet == {}
-   //    {
-   //       actualTimeOn, natTimeOn := 0, 0;
-   //       requestSet := {};
-   //    }
-   // }
+   
 
 
-   class State ... {
+    class State ... {
       // Address State 
       var lastIntv : bits    // an interval, so first 8-i bits always zero
       var count : nat                           // counter for DNS replies
       var filtering : bool          // turns adaptive filtering on and off
       var timeOn : bits      // implementation of time filtering turned on
       var recircPending : bool          // a "semaphore" for recirculation
+      ghost var requestSet : set<nat>   // pending requests, for filtering
 
+      // ghost variables for reasoning about timeOn
+      ghost var actualTimeOn : nat 
+      ghost var natTimeOn : nat
+      const T : nat := 256
+
+      
+
+      ghost var preFilterSet : set<nat> // requestSet, before any deletion
+      // ghost var recircSwitch : bool 
 
       constructor ()
             ensures (this.filtering == false)
@@ -51,9 +42,14 @@ module LucidProg refines LucidBase {
             ensures lastIntv == 0
             ensures count == 0
             ensures timeOn == 0
+            ensures actualTimeOn == 0
+            ensures natTimeOn == 0
+            ensures requestSet == {}
       {
          filtering, recircPending := false, false;
          lastIntv, count, timeOn := 0, 0, 0;
+         actualTimeOn, natTimeOn := 0, 0;
+         requestSet := {};
       }
     }
    // Parameters
@@ -66,26 +62,19 @@ module LucidProg refines LucidBase {
    const U : nat                               // upper count threshold
    const L : nat                               // lower count threshold
 
-
-
     class Handlers ... {
-
 
       constructor init ()
             requires Q > 0
             requires QRoff > Q
             requires W >= Q
             ensures (fresh(state))
-            ensures gState == GState({}, 0, 0, {})
             // does not establish inter-event invariant
             // because the event queue is empty
       {     
              state := new State();   
-             gState := GState({}, 0, 0, {});
              queue := [];
       } 
-
-
 
       predicate parameterConstraints ()      // from problem domain, ghost  
       {  I > 0 && QRoff > Q > 0  && W >= Q  }
@@ -98,12 +87,12 @@ module LucidProg refines LucidBase {
 
 
       /*** the inter-event invariant ***/
-      ghost predicate inter_event_invariant(s : State, gs : GState, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
+      ghost predicate inter_event_invariant(s : State, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
       {
          var natTime := cur_ev.natTime;
          parameterConstraints()
          && (natTime - lastNatTime < T - I)
-         && stateInvariant(s, gs, ev_queue, cur_ev.time, cur_ev.natTime, lastNatTime)
+         && stateInvariant(s, ev_queue, cur_ev.time, cur_ev.natTime, lastNatTime)
          // && (natTime < s.actualTimeOn + T)
          // Left off here. This is really weird requirement. 
          // the event's timestamp has to be within a rollover of 
@@ -122,30 +111,28 @@ module LucidProg refines LucidBase {
          // I think that will be okay-ish. 
          // The discuss doubts with Pamela
       }
-      ghost predicate stateInvariant (state : State, gstate : GState, es : seq<LocEvent>, time : bits, natTime : nat, lastNatTime : nat)         // ghost
+      ghost predicate stateInvariant (state : State, es : seq<LocEvent>, time : bits, natTime : nat, lastNatTime : nat)         // ghost
          reads state
       {
          // CHANGE: lastNatTime --> natTime because it doesn't make sense in 
          //         SetFiltering (it sets natTimeOn to the current time, not the last time)
-              (  gstate.natTimeOn <= natTime  ) 
-         && (  state.timeOn == gstate.natTimeOn % T  )
-         && (  gstate.natTimeOn >= gstate.actualTimeOn  )
+              (  state.natTimeOn <= natTime  ) 
+         && (  state.timeOn == state.natTimeOn % T  )
+         && (  state.natTimeOn >= state.actualTimeOn  )
          && (  state.filtering ==> 
-                  (protecting (state, gstate, natTime) <==> protectImplmnt (state, time))  )
-         && (  ! state.filtering ==> gstate.requestSet == {}  )
+                  (protecting (state, natTime) <==> protectImplmnt (state, time))  )
+         && (  ! state.filtering ==> state.requestSet == {}  )
          // && (  state.recircPending ==> (state.filtering == ! state.recircSwitch)  )
          // && recircInvariant(state, es) // TODO: add recircInvariant back in
       }
-
-      ghost predicate protecting (state : State, gstate : GState, natTime : nat)  
-      reads state
-                              // ghost
-      {  state.filtering && (natTime >= gstate.natTimeOn + Q as nat)  }
+      ghost predicate protecting (state : State, natTime : nat)  
+      reads state                        // ghost
+      {  state.filtering && (natTime >= state.natTimeOn + Q as nat)  }
 
       predicate protectImplmnt (state : State, time: bits)
-      reads state
       // protecting is a specification, using history variables.  This
       // is its implementation, which cannot use history variables.
+      reads state
       {  state.filtering && elapsedTime (time, state.timeOn) >= Q  } 
 
       function elapsedTime (now: bits, origin: bits): (res: bits)
@@ -159,19 +146,29 @@ module LucidProg refines LucidBase {
       {  time / I  }                           // implemented as time >> i
 
 
-      // method Dispatch(cur_ev : LocEvent)
-      // {
+      ghost function valid_event_time(s : State, ev : LocEvent) : bool 
+      {
+         ev.natTime < s.timeOn + T
+      }
 
-      // }
+      // lemma protecting()
 
+      method Dispatch(cur_ev : LocEvent)
+      {
+         if (|queue| > 0) {
+            valid_event_queue_implies_valid_time(queue);
+            assert queue[0].time == queue[0].natTime % T;
+            assert protecting(state, queue[0].natTime) <==> protectImplmnt(state, queue[0].time);
+         }
+      }
 
 
 
       method processPacket (cur_ev : LocEvent) returns (forwarded: bool)  
-         modifies this.state, this`queue, this`gState
+         modifies this.state, this`queue
          requires cur_ev.e.ProcessPacket? 
          requires valid_event_queue([cur_ev] + this.queue)
-         requires inter_event_invariant(state, gState, cur_ev, this.queue, this.lastNatTime)
+         requires inter_event_invariant(state, cur_ev, this.queue, this.lastNatTime)
          requires correct_internal_time(cur_ev)
 
          /* pasting in requirements from old version -- TODO: what's necessary? */
@@ -179,8 +176,8 @@ module LucidProg refines LucidBase {
          requires natTime - lastNatTime < T - I
          
 
-         ensures (  ! cur_ev.e.dnsRequest && protecting (state, gState, natTime)
-               && (! (cur_ev.e.uniqueSig in gState.preFilterSet))      )
+         ensures (  ! cur_ev.e.dnsRequest && protecting (state, natTime)
+               && (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
                ==> ! forwarded   // Adaptive Protection, needs exactness
 
          // ensures ! forwarded ==>                           // Harmlessness
@@ -253,7 +250,7 @@ module LucidProg refines LucidBase {
                      */
                         assert natTime - Q >= 0;
                         state.timeOn := (time - Q) % T;              // memop 
-                        gState := gState.(natTimeOn := natTime - Q); // ghost
+                        state.natTimeOn := natTime - Q;                    // ghost
                      }                                           
                   }
                   else { // oldCount < L

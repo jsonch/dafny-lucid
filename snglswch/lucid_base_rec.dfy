@@ -7,15 +7,7 @@ abstract module LucidBase {
     const T : nat := 256
     type Event (==)
     datatype LocEvent = LocEvent(e : Event, time : bits, natTime : nat)
-
-    type GState (==)
-
-    // class GState {
-    //     ghost constructor ()
-    //         ensures fresh(this)
-    //     { }
-    // }
-
+    
     class State {
         constructor () 
             ensures fresh(this)
@@ -26,7 +18,6 @@ abstract module LucidBase {
 
         // state and event queue are mutable for user-facing abstractions
         var state : State
-        ghost var gState : GState // ghost state is used for verification, e.g., which packets come next
         var queue : seq<LocEvent> // event * timestamp
 
         var time    : bits // We need time as a class variable because we want an 
@@ -36,28 +27,22 @@ abstract module LucidBase {
         var natTime : nat
         var lastNatTime : nat
 
-        /*** valid events ***/
-
-
         /***   user-defined predicates   ***/
         // an invariant over the last event that was processed, the current event, and the remaining events
-        ghost predicate inter_event_invariant(s : State, gs : GState, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
+        ghost predicate inter_event_invariant(s : State, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
             reads s
 
-        // a predicate that must hold over the entire event queue before and after 
-        // dispatch, that defines the pairs of events that we may see
-        ghost predicate valid_next_event(cur : LocEvent, next : LocEvent)
-
-        // ghost function  valid_ghost_state_transition(gs : GState, cur_ev : LocEvent) : (bool * GState)
-
         // post_dispatch must hold at the end of every event handler's execution
-        ghost predicate post_dispatch(s : State, gs : GState, updated_queue : seq<LocEvent>, processed_event_natTime : nat)
+        ghost predicate post_dispatch(s : State, updated_queue : seq<LocEvent>, processed_event_natTime : nat)
             reads s
         {
                 |updated_queue| > 0 ==> 
-                        inter_event_invariant(s, gs, updated_queue[0], updated_queue[1..], processed_event_natTime)            
+                        inter_event_invariant(s, updated_queue[0], updated_queue[1..], processed_event_natTime)            
         }
-
+        // a predicate that must hold over the entire event queue before and after 
+        // dispatch, that defines the pairs of events that we may see
+        ghost predicate valid_next_event(cur : LocEvent, next : LocEvent)
+        
         ghost predicate valid_event_queue(ev_queue : seq<LocEvent>)
         {
             (forall i | 1 <= i < |ev_queue| :: (
@@ -68,6 +53,20 @@ abstract module LucidBase {
             (forall i | 0 <= i < |ev_queue| - 1 :: 
                 ev_queue[i].time == (ev_queue[i].natTime % T))
         }
+
+        ghost function valid_event_time(s : State, ev : LocEvent) : bool
+            reads s
+        
+        ghost function valid_event_times(s : State, ev_queue : seq<LocEvent>) : bool
+            reads s
+        {
+            match |ev_queue| {
+                case 0 => true
+                case 1 => valid_event_time(s, ev_queue[0])
+                case _ => valid_event_time(s, ev_queue[0]) && valid_event_times(s, ev_queue[1..])                
+            }
+        }
+
 
         // if the queue has at least 2 events, 
         // the second event is a valid event to come after the first
@@ -91,6 +90,7 @@ abstract module LucidBase {
             requires |ev_queue| > 0 ==> valid_next_event(ev, ev_queue[0])
             ensures valid_event_queue([ev] + ev_queue)            
 
+
         lemma valid_event_queue_implies_valid_time(ev_queue : seq<LocEvent>)
             requires valid_event_queue(ev_queue)
             ensures  |ev_queue| > 0 ==> ev_queue[0].time == ev_queue[0].natTime % T
@@ -100,11 +100,12 @@ abstract module LucidBase {
         method ProcessEvent(i : nat, eq : seq<LocEvent>) returns (j : nat)
             requires |eq| > 0
             requires valid_event_queue(eq)
-            requires inter_event_invariant(this.state, this.gState, eq[0], eq[1..], lastNatTime)
+            requires valid_event_times(this.state, eq)
+            requires inter_event_invariant(this.state, eq[0], eq[1..], lastNatTime)
             requires lastNatTime <= eq[0].natTime
             requires this.natTime == eq[0].natTime
             requires this.time == eq[0].time
-            modifies this`queue, this.state, this`lastNatTime, this`natTime, this`time, this`gState
+            modifies this`queue, this.state, this`lastNatTime, this`natTime, this`time
         {
             
             valid_event_queue_implies_valid_time(eq);
@@ -116,7 +117,7 @@ abstract module LucidBase {
                 var ev_head := eq[0];
                 var eq_tail := eq[1..];
                 this.queue := eq_tail;
-                assert inter_event_invariant(this.state, this.gState, ev_head, queue, lastNatTime);                
+                assert inter_event_invariant(this.state, ev_head, queue, lastNatTime);                
                 Dispatch(ev_head);
                 // if the queue is now empty, we are done
                 if (queue == []) {
@@ -157,11 +158,12 @@ abstract module LucidBase {
             && this.time    == this.natTime % T            
         }
         method Dispatch(cur_ev : LocEvent)
-            modifies this.state, this`gState, this`queue
+            modifies this.state, this`queue
             // at the start of dispatch, the user event invariant must hold for the current event
-            requires inter_event_invariant(this.state, this.gState, cur_ev, this.queue, this.lastNatTime)
+            requires inter_event_invariant(this.state, cur_ev, this.queue, this.lastNatTime)
             // and the event must be part of a valid sequence of events
             requires valid_event_queue([cur_ev] + this.queue)
+            requires valid_event_times(this.state, [cur_ev] + this.queue)    
             requires correct_internal_time(cur_ev)
             requires this.natTime >= this.lastNatTime
             // after processing, if the queue has more items in it to process, 
@@ -180,10 +182,12 @@ abstract module LucidBase {
                 maybe we can do something weaker / simpler: 
                 if there's an event in the queue, then it must be a valid next event and the inter-event invariant must hold?
             */
-            ensures post_dispatch(state, gState, queue, natTime)
+            ensures post_dispatch(state, queue, natTime)
             // and the event must still be part of a valid sequence of events
             // is this necessary any more?
             ensures  valid_event_queue([cur_ev] + this.queue)
+            ensures  valid_event_times(this.state, [cur_ev] + this.queue)
+
 
 
         function next_generate_time(cur_natTime : nat, q : seq<LocEvent>) : nat

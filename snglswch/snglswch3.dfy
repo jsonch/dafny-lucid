@@ -359,4 +359,3 @@ class AddressState
    // scheduled timeouts which can be delayed.
       ensures ! (uniqueSig in requestSet) ==> (! inSet)
 }
-
