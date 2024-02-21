@@ -113,24 +113,9 @@ module LucidProg refines LucidBase {
          parameterConstraints()
          && (natTime - lastNatTime < T - I)
          && stateInvariant(s, gs, ev_queue, cur_ev.time, cur_ev.natTime, lastNatTime)
-         // && (natTime < s.actualTimeOn + T)
-         // Left off here. This is really weird requirement. 
-         // the event's timestamp has to be within a rollover of 
-         // actualTimeOn.
-         // What if filtering never gets turned on?
-         // Or, what if filtering turns on and never shuts off? 
-         // In either case, I think there's a "hard" limit on the time that the events may have. 
-         // they have to be within T of when filtering turned on.
-
-         // Its not an inter-arrival limit. 
-         // And it depends on the state. 
-         // LEFT OFF HERE:
-         // So lets try to work that in tomorrow. A "valid event" constraint that 
-         // just forces all the events in the queue to have less than the current state's actualTimeOn + T, 
-         // (maybe only if the current state says filtering is on?)
-         // I think that will be okay-ish. 
-         // The discuss doubts with Pamela
+         // && (natTime < s.actualTimeOn + T) // now enforced by valid_event_time
       }
+
       ghost predicate stateInvariant (state : State, gstate : GhostState, es : seq<LocEvent>, time : bits, natTime : nat, lastNatTime : nat)         // ghost
          reads state
       {
@@ -167,15 +152,12 @@ module LucidProg refines LucidBase {
       {  time / I  }                           // implemented as time >> i
 
 
-
-
-
       method Dispatch(cur_ev : LocEvent)
       {  
          if 
             case cur_ev.e.NOOP? => {}
             case cur_ev.e.ProcessPacket? => {var forwarded := processPacket(cur_ev);}
-            case cur_ev.e.SetFiltering? => {}
+            case cur_ev.e.SetFiltering? => {setFiltering(cur_ev);}
       }
 
       method setFiltering(cur_ev : LocEvent) 
