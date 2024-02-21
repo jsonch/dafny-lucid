@@ -254,12 +254,11 @@ abstract module LucidBase {
         method Generate(cur_ev : LocEvent, e : Event, out_natTime : nat)
             requires correct_internal_time(cur_ev)
             // requires valid_timestamps([cur_ev] + queue)
-            requires valid_next_events([cur_ev] + queue)
-
             requires valid_timestamps([cur_ev] + queue)
             requires ordered_timestamps([cur_ev] + queue)
             requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
                 requires valid_event_time(this.gstate, LocEvent(e, out_natTime % T, out_natTime))
+            requires valid_next_events([cur_ev] + queue)
 
             // if the queue is empty, each constraint has to hold for 
             // the current event and the generated event
@@ -274,12 +273,11 @@ abstract module LucidBase {
                 && cur_ev.natTime <= out_natTime
             )
             modifies this`queue
-            // ensures valid_timestamps([cur_ev] + queue)
-            ensures valid_next_events([cur_ev] + queue)
 
             ensures valid_timestamps([cur_ev] + queue)
             ensures ordered_timestamps([cur_ev] + queue)
             ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
+            ensures valid_next_events([cur_ev] + queue)
 
         {
             var out_ev   := LocEvent(e, out_natTime % T, out_natTime);

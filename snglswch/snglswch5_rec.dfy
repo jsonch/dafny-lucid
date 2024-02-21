@@ -202,6 +202,8 @@ module LucidProg refines LucidBase {
          ensures (forall i | 0 <= i < |evs| :: valid_event_time(gs_new, evs[i]))
 
 
+
+
       method processReply (cur_ev : LocEvent) returns (forwarded: bool)
          modifies this.state, this`queue, this`gstate
          requires cur_ev.e.ProcessPacket? 
@@ -223,12 +225,11 @@ module LucidProg refines LucidBase {
 
          ensures valid_timestamps([cur_ev] + queue)
          ensures ordered_timestamps([cur_ev] + queue)
-         ensures valid_next_events([cur_ev] + this.queue)
-         // ensures valid_event_times(this.gstate, [cur_ev] + this.queue)
-         // ensures post_dispatch(state, queue, natTime)
+         ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
+         ensures valid_next_events([cur_ev] + this.queue) // NOTE: this is the hard one!         
+         ensures post_dispatch(state, gstate, queue, natTime)
 
       {
-         assert valid_event_times(this.gstate, [cur_ev] + this.queue);
 
          // Changes to measurement state:
          // Increment or reset count.  If there is an interval with no reply
@@ -236,13 +237,9 @@ module LucidProg refines LucidBase {
          // However, the count will never include replies from more than one
          // interval.
          var oldCount : nat := 0;
-                  assert valid_event_times(this.gstate, [cur_ev] + this.queue);
          var tmpCount : nat;
-                  assert valid_event_times(this.gstate, [cur_ev] + this.queue);
          var tmpLastIntv : bits := state.lastIntv;          // get memop . . . .
-                  assert valid_event_times(this.gstate, [cur_ev] + this.queue);
          state.lastIntv := interval (time);                 // with update memop 
-                  assert valid_event_times(this.gstate, [cur_ev] + this.queue);
          if interval (time) != tmpLastIntv {
             oldCount := state.count;
             tmpCount := 1;                            // get memop . . . .
@@ -252,7 +249,6 @@ module LucidProg refines LucidBase {
             tmpCount := state.count + 1;                    // get memop . . . .
             state.count := state.count + 1;                       // with update memop
          }
-                  assert valid_event_times(this.gstate, [cur_ev] + this.queue);
 
          // Changes to filtering state:
          // Filtering is turned on as soon as count reaches upper threshold.
@@ -263,7 +259,6 @@ module LucidProg refines LucidBase {
          var tmpFiltering : bool := state.filtering;                // get memop
          var tmpTimeOn : bits;
          var tmpRecircPending : bool;
-                  assert valid_event_times(this.gstate, [cur_ev] + this.queue);
 
          if ! tmpFiltering {
             if tmpCount >= U {
@@ -277,7 +272,8 @@ module LucidProg refines LucidBase {
                   // state.recircSwitch := true;                           // ghost
                   // TODO: refactor so that generate doesn't need these extra arguments
                   generate_time_is_valid(cur_ev, queue);
-                  Generate(cur_ev, SetFiltering(true), next_generate_time(natTime, queue));                        
+                  Generate(cur_ev, SetFiltering(true), next_generate_time(natTime, queue));
+                  assert post_dispatch(state, gstate, queue, natTime);                  
                   // FI
                }  // else recirc already generated, do nothing
             }  
@@ -291,15 +287,24 @@ module LucidProg refines LucidBase {
                   if elapsedTime (time, state.timeOn) >= Q {      // with update
                      assert natTime - Q >= 0;
                      state.timeOn := (time - Q) % T;              // memop 
-                     assert valid_event_times(this.gstate, [cur_ev] + this.queue);
 
                      var new_gstate := gstate.(natTimeOn := natTime - Q); // ghost
-                     assert gstate.natTimeOn <= new_gstate.natTimeOn;
-                     assert valid_event_time(new_gstate, cur_ev);
+                     // gstate.natTimeOn := natTime - Q;                    
+                     // we need to prove that the event times are still valid with 
+                     // respect to the updated ghost state. To do that, we convert 
+                     // the sequence predicate into a into a forall predicate 
+                     // using a lemma in the template, 
+                     // apply a lemma in the user program to each item, 
+                     // and finally convert from a forall predicate 
+                     // back into a sequence predicate with another template lemma.
+                     valid_event_times_implies_forall(gstate, [cur_ev]+this.queue);
                      greater_time_on_preserves_valid_event_time(gstate, new_gstate, [cur_ev] + this.queue);
+                     forall_implies_valid_event_times(new_gstate, [cur_ev] + this.queue);
                      gstate := new_gstate;
                      assert valid_event_times(this.gstate, [cur_ev] + this.queue);
-                     // gstate.natTimeOn := natTime - Q;                    // ghost
+                     assert post_dispatch(state, gstate, queue, natTime);                  
+                     // assert post_dispatch(state, gstate, queue, natTime);
+
                   }
                }
                else { // oldCount < L
@@ -316,6 +321,8 @@ module LucidProg refines LucidBase {
                         // TODO: refactor so that generate doesn't need these extra arguments
                         generate_time_is_valid(cur_ev, queue);
                         Generate(cur_ev, SetFiltering(false), next_generate_time(natTime, queue));                        
+                        assert post_dispatch(state, gstate, queue, natTime);                  
+                        // assert post_dispatch(state, gstate, queue, natTime);
                         // FI
                      }  // else recirc already generated, do nothing
                   }
@@ -323,6 +330,7 @@ module LucidProg refines LucidBase {
             } // end boundary-crossing case
             else {  tmpTimeOn := state.timeOn; }                    // get memop
          } // end filtering case
+         // assert post_dispatch(state, gstate, queue, natTime);
 
          // Filtering decision:
          // if filtering off, it won't matter that timeOn not read
