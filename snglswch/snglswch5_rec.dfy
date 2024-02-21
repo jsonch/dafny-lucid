@@ -165,29 +165,141 @@ module LucidProg refines LucidBase {
          // }
       }
 
-      // method processRequest(cur_ev : LocEvent) returns (forwarded: bool)
-      //    modifies this.state, this`queue
-      //    requires cur_ev.e.ProcessPacket? 
-      //    // same requirements as dispatch
-      //    requires correct_internal_time(cur_ev)
-      //    requires valid_timestamps([cur_ev] + queue)
-      //    requires ordered_timestamps([cur_ev] + queue)
-      //    requires valid_event_times(this.state, [cur_ev] + this.queue)    
-      //    requires valid_next_events([cur_ev] + this.queue)
-      //    requires pre_dispatch(this.state, cur_ev, this.queue, this.lastNatTime)
-      //    /* pasting in requirements from old version -- TODO: what's necessary? */
-      //    requires cur_ev.e.dnsRequest
-      //    requires natTime >= lastNatTime
-      //    requires natTime - lastNatTime < T - I
+      method processRequest(cur_ev : LocEvent) returns (forwarded: bool)
+         modifies this.state, this`queue
+         requires cur_ev.e.ProcessPacket? 
+         // same requirements as dispatch
+         requires correct_internal_time(cur_ev)
+         requires valid_timestamps([cur_ev] + queue)
+         requires ordered_timestamps([cur_ev] + queue)
+         requires valid_event_times(this.state, [cur_ev] + this.queue)    
+         requires valid_next_events([cur_ev] + this.queue)
+         requires pre_dispatch(this.state, cur_ev, this.queue, this.lastNatTime)
+         /* pasting in requirements from old version -- TODO: what's necessary? */
+         requires cur_ev.e.dnsRequest
+         requires natTime >= lastNatTime
+         requires natTime - lastNatTime < T - I
          
-      //    ensures (  ! cur_ev.e.dnsRequest && protecting (state, natTime)
-      //          && (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
-      //          ==> ! forwarded   // Adaptive Protection, needs exactness
+         ensures (  ! cur_ev.e.dnsRequest && protecting (state, natTime)
+               && (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
+               ==> ! forwarded   // Adaptive Protection, needs exactness
 
-      // {
-      //       forwarded := false;
+      {
+            forwarded := false;
 
-      // }
+      }
+
+      method processReply (cur_ev : LocEvent) returns (forwarded: bool)
+         modifies this.state, this`queue
+         requires cur_ev.e.ProcessPacket? 
+         // same requirements as dispatch
+         requires correct_internal_time(cur_ev)
+         requires valid_timestamps([cur_ev] + queue)
+         requires ordered_timestamps([cur_ev] + queue)
+         requires valid_event_times(this.state, [cur_ev] + this.queue)    
+         requires valid_next_events([cur_ev] + this.queue)
+         requires pre_dispatch(this.state, cur_ev, this.queue, this.lastNatTime)
+         /* pasting in requirements from old version -- TODO: what's necessary? */
+         requires !cur_ev.e.dnsRequest
+         requires natTime >= lastNatTime
+         requires natTime - lastNatTime < T - I
+         
+         ensures (  ! cur_ev.e.dnsRequest && protecting (state, natTime)
+               && (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
+               ==> ! forwarded   // Adaptive Protection, needs exactness
+
+         
+
+      {
+         // Changes to measurement state:
+         // Increment or reset count.  If there is an interval with no reply
+         // packets, then the count will not be reset for that interval.
+         // However, the count will never include replies from more than one
+         // interval.
+         var oldCount : nat := 0;
+         var tmpCount : nat;
+         var tmpLastIntv : bits := state.lastIntv;          // get memop . . . .
+         state.lastIntv := interval (time);                 // with update memop 
+         if interval (time) != tmpLastIntv {
+            oldCount := state.count;
+            tmpCount := 1;                            // get memop . . . .
+            state.count := 1;                               // with update memop
+         }
+         else {  
+            tmpCount := state.count + 1;                    // get memop . . . .
+            state.count := state.count + 1;                       // with update memop
+         }
+
+         // Changes to filtering state:
+         // Filtering is turned on as soon as count reaches upper threshold.
+         // (Note that in !filtering test of count, it should never exceed U, 
+         // so this is defensive programming.)  There is no declarative 
+         // specification of turning filtering off,  so we make the code as 
+         // readable as possible.
+         var tmpFiltering : bool := state.filtering;                // get memop
+         var tmpTimeOn : bits;
+         var tmpRecircPending : bool;
+         if ! tmpFiltering {
+            if tmpCount >= U {
+               // time to turn filtering on
+               tmpRecircPending := state.recircPending;     // get memop . . . .
+               state.recircPending := true;                 // with update memop
+               if ! tmpRecircPending {
+                  // IF LUCID
+                  // generate SetFiltering (true);
+                  // ELSE
+                  // state.recircSwitch := true;                           // ghost
+                  // TODO: refactor so that generate doesn't need these extra arguments
+                  Generate(cur_ev, SetFiltering(true), next_generate_time(natTime, queue));                        
+                  // FI
+               }  // else recirc already generated, do nothing
+            }  
+         }
+         else { // filtering
+            if oldCount != 0 { // interval boundary crossed
+               if oldCount >= L {
+                  if elapsedTime (time, state.timeOn) >= Q        // get memop .
+                     {  tmpTimeOn := (time - Q) % T;  }     // . . . . . .
+                  else { tmpTimeOn := state.timeOn; }             // . . . . . .
+                  if elapsedTime (time, state.timeOn) >= Q {      // with update
+                     
+                  /*
+                     BREAKS HERE -- need state invariant!
+                  */
+                     assert natTime - Q >= 0;
+                     state.timeOn := (time - Q) % T;              // memop 
+                     state.natTimeOn := natTime - Q;                    // ghost
+                  }                                           
+               }
+               else { // oldCount < L
+                  tmpTimeOn := state.timeOn;                        // get memop
+                  if elapsedTime (time, tmpTimeOn) >= QRoff {
+                     // time to turn filtering off
+                     tmpRecircPending := state.recircPending;//get memop . . . .
+                     state.recircPending := true;           // with update memop
+                     if ! tmpRecircPending {
+                        // IF LUCID
+                        // generate SetFiltering (false);
+                        // ELSE
+                        // state.recircSwitch := false;                    // ghost
+                        // TODO: refactor so that generate doesn't need these extra arguments
+                        Generate(cur_ev, SetFiltering(false), next_generate_time(natTime, queue));                        
+                        // FI
+                     }  // else recirc already generated, do nothing
+                  }
+               }  
+            } // end boundary-crossing case
+            else {  tmpTimeOn := state.timeOn; }                    // get memop
+         } // end filtering case
+
+         // Filtering decision:
+         // if filtering off, it won't matter that timeOn not read
+         if tmpFiltering && elapsedTime (time, tmpTimeOn) >= Q {
+            forwarded := false;//   filter (dnsRequest, uniqueSig);
+         }
+         else {  forwarded := true; }
+      }
+
 
 
       method processPacket (cur_ev : LocEvent) returns (forwarded: bool)  
@@ -215,114 +327,12 @@ module LucidProg refines LucidBase {
          // requires natTime < state.actualTimeOn + T // See note in inter-event invariant
          // ensures  valid_event_queue([cur_ev] + this.queue)
       {
-
          // 
          if (cur_ev.e.dnsRequest) {
-            forwarded := false;
+            forwarded := processRequest(cur_ev);
          } else {
-            /* copy-pasted from processReply */
-
-            // Changes to measurement state:
-            // Increment or reset count.  If there is an interval with no reply
-            // packets, then the count will not be reset for that interval.
-            // However, the count will never include replies from more than one
-            // interval.
-            var oldCount : nat := 0;
-            var tmpCount : nat;
-            var tmpLastIntv : bits := state.lastIntv;          // get memop . . . .
-            state.lastIntv := interval (time);                 // with update memop 
-            if interval (time) != tmpLastIntv {
-               oldCount := state.count;
-               tmpCount := 1;                            // get memop . . . .
-               state.count := 1;                               // with update memop
-            }
-            else {  
-               tmpCount := state.count + 1;                    // get memop . . . .
-               state.count := state.count + 1;                       // with update memop
-            }
-
-            // Changes to filtering state:
-            // Filtering is turned on as soon as count reaches upper threshold.
-            // (Note that in !filtering test of count, it should never exceed U, 
-            // so this is defensive programming.)  There is no declarative 
-            // specification of turning filtering off,  so we make the code as 
-            // readable as possible.
-            var tmpFiltering : bool := state.filtering;                // get memop
-            var tmpTimeOn : bits;
-            var tmpRecircPending : bool;
-            if ! tmpFiltering {
-               if tmpCount >= U {
-                  // time to turn filtering on
-                  tmpRecircPending := state.recircPending;     // get memop . . . .
-                  state.recircPending := true;                 // with update memop
-                  if ! tmpRecircPending {
-                     // IF LUCID
-                     // generate SetFiltering (true);
-                     // ELSE
-                     // state.recircSwitch := true;                           // ghost
-                     // TODO: refactor so that generate doesn't need these extra arguments
-                     Generate(cur_ev, SetFiltering(true), next_generate_time(natTime, queue));                        
-                     // FI
-                  }  // else recirc already generated, do nothing
-               }  
-            }
-            else { // filtering
-               if oldCount != 0 { // interval boundary crossed
-                  if oldCount >= L {
-                     if elapsedTime (time, state.timeOn) >= Q        // get memop .
-                        {  tmpTimeOn := (time - Q) % T;  }     // . . . . . .
-                     else { tmpTimeOn := state.timeOn; }             // . . . . . .
-                     if elapsedTime (time, state.timeOn) >= Q {      // with update
-                        
-                     /*
-                        BREAKS HERE -- need state invariant!
-                     */
-                        assert natTime - Q >= 0;
-                        state.timeOn := (time - Q) % T;              // memop 
-                        state.natTimeOn := natTime - Q;                    // ghost
-                     }                                           
-                  }
-                  else { // oldCount < L
-                     tmpTimeOn := state.timeOn;                        // get memop
-                     if elapsedTime (time, tmpTimeOn) >= QRoff {
-                        // time to turn filtering off
-                        tmpRecircPending := state.recircPending;//get memop . . . .
-                        state.recircPending := true;           // with update memop
-                        if ! tmpRecircPending {
-                           // IF LUCID
-                           // generate SetFiltering (false);
-                           // ELSE
-                           // state.recircSwitch := false;                    // ghost
-                           // TODO: refactor so that generate doesn't need these extra arguments
-                           Generate(cur_ev, SetFiltering(false), next_generate_time(natTime, queue));                        
-                           // FI
-                        }  // else recirc already generated, do nothing
-                     }
-                  }  
-               } // end boundary-crossing case
-               else {  tmpTimeOn := state.timeOn; }                    // get memop
-            } // end filtering case
-
-            // Filtering decision:
-            // if filtering off, it won't matter that timeOn not read
-            if tmpFiltering && elapsedTime (time, tmpTimeOn) >= Q {
-               forwarded := false;//   filter (dnsRequest, uniqueSig);
-            }
-            else {  forwarded := true; }
-         } // end !dnsRequest (processResponse body)
-
-               // assert (prot_clause == prot_impl_clause);
-
-               // assert (protecting (state, queue[0].natTime) <==> protectImplmnt (state, queue[0].time));
-            // }
-         
-
-         // assert (
-         //    |queue| > 0 ==> 
-         //       (inter_event_invariant(state, queue[0], queue[1..], natTime))
-         // );
-         // assert post_dispatch (state, this.queue, cur_ev.natTime);
-         
+            forwarded := processReply(cur_ev);
+         }
       }
     }
 
