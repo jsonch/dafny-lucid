@@ -108,11 +108,13 @@ module LucidProg refines LucidBase {
          var natTime := cur_ev.natTime;
          parameterConstraints()
          && (natTime - lastNatTime < T - I)
-         && stateInvariant(s, gs, ev_queue, cur_ev.time, cur_ev.natTime, lastNatTime)
+         && stateInvariant(s, gs, cur_ev.time, cur_ev.natTime)
          // && (natTime < s.actualTimeOn + T) // now enforced by valid_event_time
+         // && recircInvariant(state, es)
+         // && (  state.recircPending ==> (state.filtering == ! state.recircSwitch)  )
       }
 
-      ghost predicate stateInvariant (state : State, gstate : GhostState, es : seq<LocEvent>, time : bits, natTime : nat, lastNatTime : nat)         // ghost
+      ghost predicate stateInvariant (state : State, gstate : GhostState, time : bits, natTime : nat)         // ghost
          reads state
       {
          // CHANGE: lastNatTime --> natTime because it doesn't make sense in 
@@ -123,8 +125,6 @@ module LucidProg refines LucidBase {
          && (  state.filtering ==> 
                   (protecting (state, gstate, natTime) <==> protectImplmnt (state, time))  )
          && (  ! state.filtering ==> state.requestSet == {}  )
-         // && (  state.recircPending ==> (state.filtering == ! state.recircSwitch)  )
-         && recircInvariant(state, es)
       }
 
       ghost predicate protecting (state : State, gstate : GhostState, natTime : nat)  
@@ -152,10 +152,10 @@ module LucidProg refines LucidBase {
       {  
          if 
             case cur_ev.e.NOOP? => {
-               recirc_invariant_tail(state, [cur_ev] + queue);
-               if (|queue| > 0) {
-                  recirc_invariant_tail(state, queue);
-               }
+               // recirc_invariant_tail(state, [cur_ev] + queue);
+               // if (|queue| > 0) {
+               //    recirc_invariant_tail(state, queue);
+               // }
             }            
             case cur_ev.e.ProcessPacket? => {var forwarded := processPacket(cur_ev);}
             case cur_ev.e.SetFiltering? => {setFiltering(cur_ev);}
@@ -178,6 +178,14 @@ module LucidProg refines LucidBase {
          ensures valid_next_events([cur_ev] + this.queue) // NOTE: this is the hard one!         
          ensures post_dispatch(state, gstate, queue, natTime)
       {
+         // assert recircInvariant(state, queue);
+         // assert count_f([cur_ev], is_setfiltering) == 1;
+         // LemmaCountSumGtFilterSeq([cur_ev], queue, is_setfiltering);
+         // assert count_f([cur_ev]+queue, is_setfiltering) >= 1;
+         // assert (state.recircPending);
+
+
+
          var tmpFiltering : bool := cur_ev.e.on;               // get memop . . . .
          state.filtering :=  cur_ev.e.on;                             // with update memop
          if tmpFiltering {
@@ -431,7 +439,7 @@ module LucidProg refines LucidBase {
                ==> ! forwarded   // Adaptive Protection, needs exactness
          ensures ! forwarded ==>                           // Harmlessness
                (  ! cur_ev.e.dnsRequest && (! (cur_ev.e.uniqueSig in state.preFilterSet))  )
-         ensures stateInvariant (state, gstate, queue, time, natTime, lastNatTime)
+         ensures stateInvariant (state, gstate, time, natTime)
       {
          forwarded := bloomFilterQuery (cur_ev.e.uniqueSig);               // memop
          if forwarded {      // if positive is false, has no effect; ghost
