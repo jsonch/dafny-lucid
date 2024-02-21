@@ -199,25 +199,17 @@ module LucidProg refines LucidBase {
          state.filtering :=  cur_ev.e.on;                             // with update memop
          if tmpFiltering {
             var tmpTimeOn : bits := state.timeOn;           // get memop . . . .
-            assert time == natTime % T;
             state.timeOn := time;                           // with update memop
             state.actualTimeOn := natTime;                              // ghost
+
+            // state.natTimeOn := natTime;                                 // ghost
+            // update the immutable ghost state
             ghost var new_gstate := gstate.(natTimeOn := natTime);
-            assert new_gstate.natTimeOn == state.actualTimeOn;
-            assert state.timeOn == new_gstate.natTimeOn % T;
             valid_event_times_implies_forall(gstate, [cur_ev]+this.queue);
             greater_time_on_preserves_valid_event_time(gstate, new_gstate, [cur_ev] + this.queue);
             forall_implies_valid_event_times(new_gstate, [cur_ev] + this.queue);
             gstate := new_gstate;
-            assert (
-               |queue| > 0 ==> 
-               (
-                  pre_dispatch(state, gstate, queue[0], queue[1..], cur_ev.natTime)
-               )
-            );
 
-
-            // state.natTimeOn := natTime;                                 // ghost
             state.recircPending := false;                        // update memop
          }
          else {
