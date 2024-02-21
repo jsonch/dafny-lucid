@@ -190,16 +190,20 @@ module LucidProg refines LucidBase {
          /* pasting in requirements from old version -- TODO: what's necessary? */
          requires natTime >= lastNatTime
          requires natTime - lastNatTime < T - I
-         
+
+         ensures valid_timestamps([cur_ev] + queue)
+         ensures ordered_timestamps([cur_ev] + queue)
+         ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
+         ensures valid_next_events([cur_ev] + this.queue) // NOTE: this is the hard one!         
+         ensures post_dispatch(state, gstate, queue, natTime)
+
+
          ensures (  ! cur_ev.e.dnsRequest && protecting (state, gstate, natTime)
                && (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
                ==> ! forwarded   // Adaptive Protection, needs exactness
 
-         // ensures ! forwarded ==>                           // Harmlessness
-         //       (  ! e.dnsRequest && (! (e.uniqueSig in state.preFilterSet))  )
-         // ensures post_dispatch(state, queue, natTime)
-         // requires natTime < state.actualTimeOn + T // See note in inter-event invariant
-         // ensures  valid_event_queue([cur_ev] + this.queue)
+         ensures ! forwarded ==>                           // Harmlessness
+               (  ! cur_ev.e.dnsRequest && (! (cur_ev.e.uniqueSig in state.preFilterSet))  )
       {
          // 
          if (cur_ev.e.dnsRequest) {
@@ -225,14 +229,23 @@ module LucidProg refines LucidBase {
          requires natTime >= lastNatTime
          requires natTime - lastNatTime < T - I
          
-         ensures (  ! cur_ev.e.dnsRequest && protecting (state, gstate, natTime)
-               && (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
-               ==> ! forwarded   // Adaptive Protection, needs exactness
+         ensures forwarded
+         ensures valid_timestamps([cur_ev] + queue)
+         ensures ordered_timestamps([cur_ev] + queue)
+         ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
+         ensures valid_next_events([cur_ev] + this.queue) // NOTE: this is the hard one!         
+         ensures post_dispatch(state, gstate, queue, natTime)
+
+
 
       {
-            forwarded := false;
-
+         var tmpFiltering : bool := state.filtering;                // get memop
+         if (tmpFiltering) {  
+            bloomFilterInsert (cur_ev.e.uniqueSig);                        // memop
+            state.requestSet := state.requestSet + { cur_ev.e.uniqueSig }; }           // ghost
+         forwarded := true;
       }
+
 
       method processReply (cur_ev : LocEvent) returns (forwarded: bool)
          modifies this.state, this`queue, this`gstate
