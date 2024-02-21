@@ -101,10 +101,6 @@ module LucidProg refines LucidBase {
          requires (forall i | 0 <= i < |evs| :: valid_event_time(gs_old, evs[i]))
          ensures (forall i | 0 <= i < |evs| :: valid_event_time(gs_new, evs[i]))
 
-
-
-
-
       /*** the inter-event invariant ***/
       ghost predicate pre_dispatch(s : State, gs : GhostState, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
       {
@@ -128,7 +124,7 @@ module LucidProg refines LucidBase {
                   (protecting (state, gstate, natTime) <==> protectImplmnt (state, time))  )
          && (  ! state.filtering ==> state.requestSet == {}  )
          // && (  state.recircPending ==> (state.filtering == ! state.recircSwitch)  )
-         // && recircInvariant(state, es) // TODO: add recircInvariant back in
+         && recircInvariant(state, es)
       }
 
       ghost predicate protecting (state : State, gstate : GhostState, natTime : nat)  
@@ -155,7 +151,12 @@ module LucidProg refines LucidBase {
       method Dispatch(cur_ev : LocEvent)
       {  
          if 
-            case cur_ev.e.NOOP? => {}
+            case cur_ev.e.NOOP? => {
+               recirc_invariant_tail(state, [cur_ev] + queue);
+               if (|queue| > 0) {
+                  recirc_invariant_tail(state, queue);
+               }
+            }            
             case cur_ev.e.ProcessPacket? => {var forwarded := processPacket(cur_ev);}
             case cur_ev.e.SetFiltering? => {setFiltering(cur_ev);}
       }
@@ -459,6 +460,107 @@ module LucidProg refines LucidBase {
       // sliding-window Bloom filter, there are no timely deletions, just
       // scheduled timeouts which can be delayed.
          ensures ! (uniqueSig in state.requestSet) ==> (! inSet)
+
+
+
+   /****  recirculation invariant and friends ****/
+      function is_setfiltering (e : LocEvent) : bool 
+      {
+         match e.e {
+            case SetFiltering(_) => true
+            case _ => false
+         }
+      }
+      function is_setfiltering_true (e : LocEvent) : bool 
+      {
+         match e.e {
+            case SetFiltering(true) => true
+            case _ => false
+         }
+      }
+      function is_setfiltering_false (e : LocEvent) : bool 
+      {
+         match e.e {
+            case SetFiltering(false) => true
+            case _ => false
+         }
+      }
+
+      lemma recirc_invariant_tail(state : State, events : seq<LocEvent>)
+         requires recircInvariant(state, events)
+         ensures |events| > 0 ==> recircInvariant(state, events[1..])
+
+
+      ghost predicate recircInvariant (state : State, events : seq<LocEvent>) 
+      reads state 
+      // this invariant is about the relationship between the recircPending 
+      // semaphore and the setFiltering events that may appear in the queue. 
+      // There are two parts to the invariant: 
+      // 1. when recircPending is true, the invariant asserts that there's only one setFiltering event in the queue
+      // 2. when there are setFiltering events in the queue, the invariant asserts that recircPending is true
+      // I _think_ that both "directions" are necessary to verify the program. (But, this could probably be cleaned up a lot.)
+      {
+         (
+            if state.recircPending
+            then 
+            (
+               (|events| > 0)
+               &&
+               count_f(events, is_setfiltering) == 1
+               &&
+               (
+                  if state.filtering
+                  then
+                  (
+                     count_f(events, is_setfiltering_false) == 1
+                  )
+                  else
+                  (
+                     count_f(events, is_setfiltering_true) == 1
+                  )
+               )
+            )
+            else 
+            (
+               count_f(events, is_setfiltering) == 0
+               && 
+               count_f(events, is_setfiltering_false) == 0
+               && 
+               count_f(events, is_setfiltering_true) == 0
+            )
+         )
+         &&
+         (
+            if ( count_f(events, is_setfiltering) >0)
+            then (
+               state.recircPending == true
+            )
+            else (
+               state.recircPending == false
+            )
+         )
+      }
+
+
+    // helpers to reason about event queue contents
+    function count_f<T>(ls : seq<T>, f : (T -> bool)) : int
+    {
+        if (ls == []) then 0
+        else (
+            if (f(ls[0]))
+            then (1 + count_f(ls[1..], f))
+            else (count_f(ls[1..], f))
+        )
+    }
+    lemma LemmaCountSumFilterSeq<T>(a : seq<T>, b : seq<T>, f : (T -> bool))
+    ensures count_f(a + b, f) == count_f(a, f) + count_f(b, f)
+
+    lemma LemmaCountSumGtFilterSeq<T>(a : seq<T>, b : seq<T>, f : (T -> bool))
+    ensures count_f(a + b, f) > count_f(a, f)
+    ensures count_f(a + b, f) > count_f(b, f)
+
+
+
 
 
     }
