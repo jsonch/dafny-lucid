@@ -12,7 +12,8 @@ module LucidProg refines LucidBase {
       // | PacketOut() // optional.
 
    
-
+    datatype GhostState = 
+       | GhostState(natTimeOn : nat)
 
     class State ... {
       // Address State 
@@ -25,7 +26,7 @@ module LucidProg refines LucidBase {
 
       // ghost variables for reasoning about timeOn
       ghost var actualTimeOn : nat 
-      ghost var natTimeOn : nat
+      // ghost var natTimeOn : nat
       const T : nat := 256
 
       
@@ -43,12 +44,13 @@ module LucidProg refines LucidBase {
             ensures count == 0
             ensures timeOn == 0
             ensures actualTimeOn == 0
-            ensures natTimeOn == 0
+            // ensures natTimeOn == 0
             ensures requestSet == {}
       {
          filtering, recircPending := false, false;
          lastIntv, count, timeOn := 0, 0, 0;
-         actualTimeOn, natTimeOn := 0, 0;
+         actualTimeOn := 0;
+         // natTimeOn := 0;
          requestSet := {};
       }
     }
@@ -69,15 +71,18 @@ module LucidProg refines LucidBase {
             requires QRoff > Q
             requires W >= Q
             ensures (fresh(state))
+            ensures (gstate == GhostState(0))
             // does not establish inter-event invariant
             // because the event queue is empty
       {     
              state := new State();   
+             gstate := GhostState(0); 
              queue := [];
       } 
 
       predicate parameterConstraints ()      // from problem domain, ghost  
       {  I > 0 && QRoff > Q > 0  && W >= Q  }
+
 
 
       ghost predicate valid_next_event(cur : LocEvent, next : LocEvent)
@@ -87,13 +92,13 @@ module LucidProg refines LucidBase {
 
 
       /*** the inter-event invariant ***/
-      ghost predicate pre_dispatch(s : State, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
+      ghost predicate pre_dispatch(s : State, gs : GhostState, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
       {
       
          var natTime := cur_ev.natTime;
          parameterConstraints()
          && (natTime - lastNatTime < T - I)
-         && stateInvariant(s, ev_queue, cur_ev.time, cur_ev.natTime, lastNatTime)
+         && stateInvariant(s, gs, ev_queue, cur_ev.time, cur_ev.natTime, lastNatTime)
          // && (natTime < s.actualTimeOn + T)
          // Left off here. This is really weird requirement. 
          // the event's timestamp has to be within a rollover of 
@@ -112,23 +117,24 @@ module LucidProg refines LucidBase {
          // I think that will be okay-ish. 
          // The discuss doubts with Pamela
       }
-      ghost predicate stateInvariant (state : State, es : seq<LocEvent>, time : bits, natTime : nat, lastNatTime : nat)         // ghost
+      ghost predicate stateInvariant (state : State, gstate : GhostState, es : seq<LocEvent>, time : bits, natTime : nat, lastNatTime : nat)         // ghost
          reads state
       {
          // CHANGE: lastNatTime --> natTime because it doesn't make sense in 
          //         SetFiltering (it sets natTimeOn to the current time, not the last time)
-              (  state.natTimeOn <= natTime  ) 
-         && (  state.timeOn == state.natTimeOn % T  )
-         && (  state.natTimeOn >= state.actualTimeOn  )
+              (  gstate.natTimeOn <= natTime  ) 
+         && (  state.timeOn == gstate.natTimeOn % T  )
+         && (  gstate.natTimeOn >= state.actualTimeOn  )
          && (  state.filtering ==> 
-                  (protecting (state, natTime) <==> protectImplmnt (state, time))  )
+                  (protecting (state, gstate, natTime) <==> protectImplmnt (state, time))  )
          && (  ! state.filtering ==> state.requestSet == {}  )
          // && (  state.recircPending ==> (state.filtering == ! state.recircSwitch)  )
          // && recircInvariant(state, es) // TODO: add recircInvariant back in
       }
-      ghost predicate protecting (state : State, natTime : nat)  
+
+      ghost predicate protecting (state : State, gstate : GhostState, natTime : nat)  
       reads state                        // ghost
-      {  state.filtering && (natTime >= state.natTimeOn + Q as nat)  }
+      {  state.filtering && (natTime >= gstate.natTimeOn + Q as nat)  }
 
       predicate protectImplmnt (state : State, time: bits)
       // protecting is a specification, using history variables.  This
@@ -147,10 +153,6 @@ module LucidProg refines LucidBase {
       {  time / I  }                           // implemented as time >> i
 
 
-      ghost function valid_event_time(s : State, ev : LocEvent) : bool 
-      {
-         ev.natTime < s.timeOn + T
-      }
 
       method Dispatch(cur_ev : LocEvent)
       {  
@@ -172,15 +174,15 @@ module LucidProg refines LucidBase {
          requires correct_internal_time(cur_ev)
          requires valid_timestamps([cur_ev] + queue)
          requires ordered_timestamps([cur_ev] + queue)
-         requires valid_event_times(this.state, [cur_ev] + this.queue)    
+         requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
          requires valid_next_events([cur_ev] + this.queue)
-         requires pre_dispatch(this.state, cur_ev, this.queue, this.lastNatTime)
+         requires pre_dispatch(this.state, this.gstate, cur_ev, this.queue, this.lastNatTime)
          /* pasting in requirements from old version -- TODO: what's necessary? */
          requires cur_ev.e.dnsRequest
          requires natTime >= lastNatTime
          requires natTime - lastNatTime < T - I
          
-         ensures (  ! cur_ev.e.dnsRequest && protecting (state, natTime)
+         ensures (  ! cur_ev.e.dnsRequest && protecting (state, gstate, natTime)
                && (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
                ==> ! forwarded   // Adaptive Protection, needs exactness
 
@@ -189,37 +191,53 @@ module LucidProg refines LucidBase {
 
       }
 
+      ghost function valid_event_time(gs : GhostState, ev : LocEvent) : bool 
+      {
+         ev.natTime < gs.natTimeOn + T
+      }
+
+
       method processReply (cur_ev : LocEvent) returns (forwarded: bool)
-         modifies this.state, this`queue
+         modifies this.state, this`queue, this`gstate
          requires cur_ev.e.ProcessPacket? 
          // same requirements as dispatch
          requires correct_internal_time(cur_ev)
          requires valid_timestamps([cur_ev] + queue)
          requires ordered_timestamps([cur_ev] + queue)
-         requires valid_event_times(this.state, [cur_ev] + this.queue)    
+         requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
          requires valid_next_events([cur_ev] + this.queue)
-         requires pre_dispatch(this.state, cur_ev, this.queue, this.lastNatTime)
+         requires pre_dispatch(this.state, gstate, cur_ev, this.queue, this.lastNatTime)
          /* pasting in requirements from old version -- TODO: what's necessary? */
          requires !cur_ev.e.dnsRequest
          requires natTime >= lastNatTime
          requires natTime - lastNatTime < T - I
-         
-         ensures (  ! cur_ev.e.dnsRequest && protecting (state, natTime)
+         requires natTime < gstate.natTimeOn + T         
+         ensures (  ! cur_ev.e.dnsRequest && protecting (state, gstate, natTime)
                && (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
                ==> ! forwarded   // Adaptive Protection, needs exactness
 
-         
+         // ensures valid_timestamps([cur_ev] + queue)
+         // ensures ordered_timestamps([cur_ev] + queue)
+         // ensures valid_next_events([cur_ev] + this.queue)
+         // ensures valid_event_times(this.state, [cur_ev] + this.queue)
+         // ensures post_dispatch(state, queue, natTime)
 
       {
+         assert valid_event_times(this.gstate, [cur_ev] + this.queue);
+
          // Changes to measurement state:
          // Increment or reset count.  If there is an interval with no reply
          // packets, then the count will not be reset for that interval.
          // However, the count will never include replies from more than one
          // interval.
          var oldCount : nat := 0;
+                  assert valid_event_times(this.gstate, [cur_ev] + this.queue);
          var tmpCount : nat;
+                  assert valid_event_times(this.gstate, [cur_ev] + this.queue);
          var tmpLastIntv : bits := state.lastIntv;          // get memop . . . .
+                  assert valid_event_times(this.gstate, [cur_ev] + this.queue);
          state.lastIntv := interval (time);                 // with update memop 
+                  assert valid_event_times(this.gstate, [cur_ev] + this.queue);
          if interval (time) != tmpLastIntv {
             oldCount := state.count;
             tmpCount := 1;                            // get memop . . . .
@@ -229,6 +247,7 @@ module LucidProg refines LucidBase {
             tmpCount := state.count + 1;                    // get memop . . . .
             state.count := state.count + 1;                       // with update memop
          }
+                  assert valid_event_times(this.gstate, [cur_ev] + this.queue);
 
          // Changes to filtering state:
          // Filtering is turned on as soon as count reaches upper threshold.
@@ -239,6 +258,8 @@ module LucidProg refines LucidBase {
          var tmpFiltering : bool := state.filtering;                // get memop
          var tmpTimeOn : bits;
          var tmpRecircPending : bool;
+                  assert valid_event_times(this.gstate, [cur_ev] + this.queue);
+
          if ! tmpFiltering {
             if tmpCount >= U {
                // time to turn filtering on
@@ -250,6 +271,7 @@ module LucidProg refines LucidBase {
                   // ELSE
                   // state.recircSwitch := true;                           // ghost
                   // TODO: refactor so that generate doesn't need these extra arguments
+                  generate_time_is_valid(cur_ev, queue);
                   Generate(cur_ev, SetFiltering(true), next_generate_time(natTime, queue));                        
                   // FI
                }  // else recirc already generated, do nothing
@@ -262,13 +284,11 @@ module LucidProg refines LucidBase {
                      {  tmpTimeOn := (time - Q) % T;  }     // . . . . . .
                   else { tmpTimeOn := state.timeOn; }             // . . . . . .
                   if elapsedTime (time, state.timeOn) >= Q {      // with update
-                     
-                  /*
-                     BREAKS HERE -- need state invariant!
-                  */
                      assert natTime - Q >= 0;
                      state.timeOn := (time - Q) % T;              // memop 
-                     state.natTimeOn := natTime - Q;                    // ghost
+                     gstate := gstate.(natTimeOn := natTime - Q); // ghost
+
+                     // gstate.natTimeOn := natTime - Q;                    // ghost
                   }                                           
                }
                else { // oldCount < L
@@ -283,11 +303,12 @@ module LucidProg refines LucidBase {
                         // ELSE
                         // state.recircSwitch := false;                    // ghost
                         // TODO: refactor so that generate doesn't need these extra arguments
+                        generate_time_is_valid(cur_ev, queue);
                         Generate(cur_ev, SetFiltering(false), next_generate_time(natTime, queue));                        
                         // FI
                      }  // else recirc already generated, do nothing
                   }
-               }  
+               }
             } // end boundary-crossing case
             else {  tmpTimeOn := state.timeOn; }                    // get memop
          } // end filtering case
@@ -302,22 +323,23 @@ module LucidProg refines LucidBase {
 
 
 
+
       method processPacket (cur_ev : LocEvent) returns (forwarded: bool)  
-         modifies this.state, this`queue
+         modifies this.state, this`queue, this`gstate
          requires cur_ev.e.ProcessPacket? 
          // same requirements as dispatch
          requires correct_internal_time(cur_ev)
          requires valid_timestamps([cur_ev] + queue)
          requires ordered_timestamps([cur_ev] + queue)
-         requires valid_event_times(this.state, [cur_ev] + this.queue)    
+         requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
          requires valid_next_events([cur_ev] + this.queue)
-         requires pre_dispatch(this.state, cur_ev, this.queue, this.lastNatTime)
+         requires pre_dispatch(this.state, gstate, cur_ev, this.queue, this.lastNatTime)
 
          /* pasting in requirements from old version -- TODO: what's necessary? */
          requires natTime >= lastNatTime
          requires natTime - lastNatTime < T - I
          
-         ensures (  ! cur_ev.e.dnsRequest && protecting (state, natTime)
+         ensures (  ! cur_ev.e.dnsRequest && protecting (state, gstate, natTime)
                && (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
                ==> ! forwarded   // Adaptive Protection, needs exactness
 
