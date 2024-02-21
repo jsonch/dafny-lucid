@@ -12,23 +12,26 @@ module LucidProg refines LucidBase {
       // | PacketOut() // optional.
 
 
-   class GState ... {
-      ghost var requestSet : set<nat>   // pending requests, for filtering
-      // ghost variables for reasoning about timeOn
-      ghost var actualTimeOn : nat 
-      ghost var natTimeOn : nat    
-      ghost var preFilterSet : set<nat> // requestSet, before any deletion
-      // ghost var recircSwitch : bool 
+   datatype GState = 
+      | GState(requestSet : set<nat>, actualTimeOn : nat , natTimeOn : nat , preFilterSet : set<nat>)
+   // class GState ... {
+   //    ghost var requestSet : set<nat>   // pending requests, for filtering
+   //    // ghost variables for reasoning about timeOn
+   //    ghost var actualTimeOn : nat 
+   //    ghost var natTimeOn : nat    
+   //    ghost var preFilterSet : set<nat> // requestSet, before any deletion
+   //    // ghost var recircSwitch : bool 
 
-      ghost constructor ()
-            ensures actualTimeOn == 0
-            ensures natTimeOn == 0
-            ensures requestSet == {}
-      {
-         actualTimeOn, natTimeOn := 0, 0;
-         requestSet := {};
-      }
-   }
+   //    ghost constructor ()
+   //          ensures actualTimeOn == 0
+   //          ensures natTimeOn == 0
+   //          ensures requestSet == {}
+   //    {
+   //       actualTimeOn, natTimeOn := 0, 0;
+   //       requestSet := {};
+   //    }
+   // }
+
 
    class State ... {
       // Address State 
@@ -37,7 +40,6 @@ module LucidProg refines LucidBase {
       var filtering : bool          // turns adaptive filtering on and off
       var timeOn : bits      // implementation of time filtering turned on
       var recircPending : bool          // a "semaphore" for recirculation
-
 
 
       constructor ()
@@ -64,19 +66,22 @@ module LucidProg refines LucidBase {
    const U : nat                               // upper count threshold
    const L : nat                               // lower count threshold
 
+
+
     class Handlers ... {
+
 
       constructor init ()
             requires Q > 0
             requires QRoff > Q
             requires W >= Q
             ensures (fresh(state))
-            ensures (fresh(gState))
+            ensures gState == GState({}, 0, 0, {})
             // does not establish inter-event invariant
             // because the event queue is empty
       {     
              state := new State();   
-             gState := new GState();
+             gState := GState({}, 0, 0, {});
              queue := [];
       } 
 
@@ -118,7 +123,7 @@ module LucidProg refines LucidBase {
          // The discuss doubts with Pamela
       }
       ghost predicate stateInvariant (state : State, gstate : GState, es : seq<LocEvent>, time : bits, natTime : nat, lastNatTime : nat)         // ghost
-         reads state, gstate
+         reads state
       {
          // CHANGE: lastNatTime --> natTime because it doesn't make sense in 
          //         SetFiltering (it sets natTimeOn to the current time, not the last time)
@@ -133,7 +138,7 @@ module LucidProg refines LucidBase {
       }
 
       ghost predicate protecting (state : State, gstate : GState, natTime : nat)  
-      reads state, gstate
+      reads state
                               // ghost
       {  state.filtering && (natTime >= gstate.natTimeOn + Q as nat)  }
 
@@ -154,16 +159,16 @@ module LucidProg refines LucidBase {
       {  time / I  }                           // implemented as time >> i
 
 
-      method Dispatch(cur_ev : LocEvent)
-      {
+      // method Dispatch(cur_ev : LocEvent)
+      // {
 
-      }
+      // }
 
 
 
 
       method processPacket (cur_ev : LocEvent) returns (forwarded: bool)  
-         modifies this.state, this`queue, this.gState
+         modifies this.state, this`queue, this`gState
          requires cur_ev.e.ProcessPacket? 
          requires valid_event_queue([cur_ev] + this.queue)
          requires inter_event_invariant(state, gState, cur_ev, this.queue, this.lastNatTime)
@@ -248,7 +253,7 @@ module LucidProg refines LucidBase {
                      */
                         assert natTime - Q >= 0;
                         state.timeOn := (time - Q) % T;              // memop 
-                        gState.natTimeOn := natTime - Q;                    // ghost
+                        gState := gState.(natTimeOn := natTime - Q); // ghost
                      }                                           
                   }
                   else { // oldCount < L
