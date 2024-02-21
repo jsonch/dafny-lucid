@@ -168,11 +168,13 @@ module LucidProg refines LucidBase {
 
 
 
+
+
       method Dispatch(cur_ev : LocEvent)
       {  
          if 
             case cur_ev.e.NOOP? => {}
-            case cur_ev.e.ProcessPacket? => {}
+            case cur_ev.e.ProcessPacket? => {var forwarded := processPacket(cur_ev);}
             case cur_ev.e.SetFiltering? => {}
       }
 

@@ -114,11 +114,12 @@ abstract module LucidBase {
         }
 
         predicate correct_internal_time(cur_ev : LocEvent)
-            reads this`natTime, this`time
+            reads this`natTime, this`time, this`lastNatTime
         {
             this.natTime == cur_ev.natTime
             && this.time    == cur_ev.time
-            && this.time    == this.natTime % T            
+            && this.time    == this.natTime % T  
+            && this.natTime >= this.lastNatTime          
         }
 
         // if the queue has at least 2 events, 
@@ -168,7 +169,7 @@ abstract module LucidBase {
             requires lastNatTime <= eq[0].natTime
             requires this.natTime == eq[0].natTime
             requires this.time == eq[0].time
-            modifies this`queue, this.state, this`lastNatTime, this`natTime, this`time
+            modifies this`queue, this.state, this`gstate, this`lastNatTime, this`natTime, this`time
         {
             if (i <= 0) {
                 j := 0;
@@ -211,7 +212,7 @@ abstract module LucidBase {
         }
 
         method Dispatch(cur_ev : LocEvent)
-            modifies this.state, this`queue
+            modifies this.state, this`queue, this`gstate
             requires correct_internal_time(cur_ev)
 
             requires valid_timestamps([cur_ev] + queue)
