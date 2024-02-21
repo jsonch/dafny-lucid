@@ -178,6 +178,59 @@ module LucidProg refines LucidBase {
             case cur_ev.e.SetFiltering? => {}
       }
 
+      method setFiltering(cur_ev : LocEvent) 
+         requires cur_ev.e.SetFiltering?
+         modifies this.state, this`gstate
+
+         requires correct_internal_time(cur_ev)
+         requires valid_timestamps([cur_ev] + queue)
+         requires ordered_timestamps([cur_ev] + queue)
+         requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
+         requires valid_next_events([cur_ev] + this.queue)
+         requires pre_dispatch(this.state, gstate, cur_ev, this.queue, this.lastNatTime)
+
+         ensures valid_timestamps([cur_ev] + queue)
+         ensures ordered_timestamps([cur_ev] + queue)
+         ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
+         ensures valid_next_events([cur_ev] + this.queue) // NOTE: this is the hard one!         
+         ensures post_dispatch(state, gstate, queue, natTime)
+      {
+         var tmpFiltering : bool := cur_ev.e.on;               // get memop . . . .
+         state.filtering :=  cur_ev.e.on;                             // with update memop
+         if tmpFiltering {
+            var tmpTimeOn : bits := state.timeOn;           // get memop . . . .
+            assert time == natTime % T;
+            state.timeOn := time;                           // with update memop
+            state.actualTimeOn := natTime;                              // ghost
+            ghost var new_gstate := gstate.(natTimeOn := natTime);
+            assert new_gstate.natTimeOn == state.actualTimeOn;
+            assert state.timeOn == new_gstate.natTimeOn % T;
+            valid_event_times_implies_forall(gstate, [cur_ev]+this.queue);
+            greater_time_on_preserves_valid_event_time(gstate, new_gstate, [cur_ev] + this.queue);
+            forall_implies_valid_event_times(new_gstate, [cur_ev] + this.queue);
+            gstate := new_gstate;
+            assert (
+               |queue| > 0 ==> 
+               (
+                  pre_dispatch(state, gstate, queue[0], queue[1..], cur_ev.natTime)
+               )
+            );
+
+
+            // state.natTimeOn := natTime;                                 // ghost
+            state.recircPending := false;                        // update memop
+         }
+         else {
+            state.recircPending := false;                        // update memop
+            state.requestSet := {};                              // update memop
+            // we need to prove that there are no setfiltering events in the queue
+
+         }
+      }
+
+
+
+
       method processPacket (cur_ev : LocEvent) returns (forwarded: bool)  
          modifies this.state, this`queue, this`gstate
          requires cur_ev.e.ProcessPacket? 
