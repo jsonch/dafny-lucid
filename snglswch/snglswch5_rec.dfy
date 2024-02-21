@@ -3,7 +3,7 @@ include "lucid_base_rec.dfy"
 module LucidProg refines LucidBase {
 
     datatype Event = 
-      // | NOOP()
+      | NOOP()
       | ProcessPacket(dnsRequest: bool, uniqueSig: nat)
       | SetFiltering(on : bool)
       
@@ -87,8 +87,9 @@ module LucidProg refines LucidBase {
 
 
       /*** the inter-event invariant ***/
-      ghost predicate inter_event_invariant(s : State, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
+      ghost predicate pre_dispatch(s : State, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
       {
+      
          var natTime := cur_ev.natTime;
          parameterConstraints()
          && (natTime - lastNatTime < T - I)
@@ -151,31 +152,59 @@ module LucidProg refines LucidBase {
          ev.natTime < s.timeOn + T
       }
 
-      // lemma protecting()
-
       method Dispatch(cur_ev : LocEvent)
-      {
-         if (|queue| > 0) {
-            valid_event_queue_implies_valid_time(queue);
-            assert queue[0].time == queue[0].natTime % T;
-            assert protecting(state, queue[0].natTime) <==> protectImplmnt(state, queue[0].time);
-         }
+      {  
+         if 
+            case cur_ev.e.NOOP? => {}
+            case cur_ev.e.ProcessPacket? => {}
+            case cur_ev.e.SetFiltering? => {}
+
+         // if (|queue| > 0) {
+            
+            // assert protecting(state, queue[0].natTime) <==> protectImplmnt(state, queue[0].time);
+         // }
       }
 
+      // method processRequest(cur_ev : LocEvent) returns (forwarded: bool)
+      //    modifies this.state, this`queue
+      //    requires cur_ev.e.ProcessPacket? 
+      //    // same requirements as dispatch
+      //    requires correct_internal_time(cur_ev)
+      //    requires valid_timestamps([cur_ev] + queue)
+      //    requires ordered_timestamps([cur_ev] + queue)
+      //    requires valid_event_times(this.state, [cur_ev] + this.queue)    
+      //    requires valid_next_events([cur_ev] + this.queue)
+      //    requires pre_dispatch(this.state, cur_ev, this.queue, this.lastNatTime)
+      //    /* pasting in requirements from old version -- TODO: what's necessary? */
+      //    requires cur_ev.e.dnsRequest
+      //    requires natTime >= lastNatTime
+      //    requires natTime - lastNatTime < T - I
+         
+      //    ensures (  ! cur_ev.e.dnsRequest && protecting (state, natTime)
+      //          && (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
+      //          ==> ! forwarded   // Adaptive Protection, needs exactness
+
+      // {
+      //       forwarded := false;
+
+      // }
 
 
       method processPacket (cur_ev : LocEvent) returns (forwarded: bool)  
          modifies this.state, this`queue
          requires cur_ev.e.ProcessPacket? 
-         requires valid_event_queue([cur_ev] + this.queue)
-         requires inter_event_invariant(state, cur_ev, this.queue, this.lastNatTime)
+         // same requirements as dispatch
          requires correct_internal_time(cur_ev)
+         requires valid_timestamps([cur_ev] + queue)
+         requires ordered_timestamps([cur_ev] + queue)
+         requires valid_event_times(this.state, [cur_ev] + this.queue)    
+         requires valid_next_events([cur_ev] + this.queue)
+         requires pre_dispatch(this.state, cur_ev, this.queue, this.lastNatTime)
 
          /* pasting in requirements from old version -- TODO: what's necessary? */
          requires natTime >= lastNatTime
          requires natTime - lastNatTime < T - I
          
-
          ensures (  ! cur_ev.e.dnsRequest && protecting (state, natTime)
                && (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
                ==> ! forwarded   // Adaptive Protection, needs exactness

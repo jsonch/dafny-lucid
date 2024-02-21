@@ -28,35 +28,21 @@ abstract module LucidBase {
         var lastNatTime : nat
 
         /***   user-defined predicates   ***/
-        // an invariant over the last event that was processed, the current event, and the remaining events
-        ghost predicate inter_event_invariant(s : State, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
-            reads s
-
-        // post_dispatch must hold at the end of every event handler's execution
-        ghost predicate post_dispatch(s : State, updated_queue : seq<LocEvent>, processed_event_natTime : nat)
-            reads s
-        {
-                |updated_queue| > 0 ==> 
-                        inter_event_invariant(s, updated_queue[0], updated_queue[1..], processed_event_natTime)            
-        }
-        // a predicate that must hold over the entire event queue before and after 
-        // dispatch, that defines the pairs of events that we may see
+        // the event "next" is a valid event to come after "cur"
         ghost predicate valid_next_event(cur : LocEvent, next : LocEvent)
-        
-        ghost predicate valid_event_queue(ev_queue : seq<LocEvent>)
+        ghost predicate valid_next_events(ev_queue : seq<LocEvent>)
         {
-            (forall i | 1 <= i < |ev_queue| :: (
-                valid_next_event(ev_queue[i-1], ev_queue[i])
-                && ev_queue[i-1].natTime <= ev_queue[i].natTime)
-            )
-            && 
-            (forall i | 0 <= i < |ev_queue| - 1 :: 
-                ev_queue[i].time == (ev_queue[i].natTime % T))
+            match |ev_queue| {
+                case 0 => true
+                case 1 => true
+                case _ => 
+                   valid_next_event(ev_queue[0], ev_queue[1])
+                    && valid_next_events(ev_queue[1..])
+            }            
         }
-
+        // the time of event "ev" is valid with respect to some program state "s"
         ghost function valid_event_time(s : State, ev : LocEvent) : bool
             reads s
-        
         ghost function valid_event_times(s : State, ev_queue : seq<LocEvent>) : bool
             reads s
         {
@@ -67,49 +53,94 @@ abstract module LucidBase {
             }
         }
 
+        // pre_dispatch is guaranteed to hold at the beginning of every event handler's execution
+        ghost predicate pre_dispatch(s : State, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
+            reads s
+
+        // post_dispatch must hold at the end of every event handler's execution
+        // it just says that if the updated queue is not empty, 
+        // pre_dispatch holds for the next event on the updated state
+        ghost predicate post_dispatch(updated_s : State, updated_queue : seq<LocEvent>, updated_lastNatTime : nat)
+            reads updated_s
+        {
+                |updated_queue| > 0 ==> 
+                        pre_dispatch(updated_s, updated_queue[0], updated_queue[1..], updated_lastNatTime)            
+        }
+        
+
+
+
+        // natural and bit representations of timestamps match
+        ghost function valid_timestamps(ev_queue : seq<LocEvent>) : bool
+        {
+            match |ev_queue| {
+                case 0 => true
+                case 1 => ev_queue[0].time == (ev_queue[0].natTime % T)
+                case _ => 
+                    ev_queue[0].time == (ev_queue[0].natTime % T)
+                    && valid_timestamps(ev_queue[1..])
+            }
+        }
+        ghost function ordered_timestamps(ev_queue : seq<LocEvent>) : bool
+        {
+            match |ev_queue| {
+                case 0 => true
+                case 1 => true
+                case _ => 
+                    ev_queue[0].natTime <= ev_queue[1].natTime
+                    && ordered_timestamps(ev_queue[1..])
+            }            
+        }
+
+        predicate correct_internal_time(cur_ev : LocEvent)
+            reads this`natTime, this`time
+        {
+            this.natTime == cur_ev.natTime
+            && this.time    == cur_ev.time
+            && this.time    == this.natTime % T            
+        }
 
         // if the queue has at least 2 events, 
         // the second event is a valid event to come after the first
         lemma valid_event_queue_implies_valid_head(ev_queue : seq<LocEvent>)
-            requires valid_event_queue(ev_queue)
+            requires valid_next_events(ev_queue)
             ensures (match |ev_queue| {
                 case 0 => true
                 case 1 => true
                 case _ => valid_next_event(ev_queue[0], ev_queue[1])})
         lemma valid_event_queue_implies_valid_tail(ev_queue : seq<LocEvent>)
-            requires valid_event_queue(ev_queue)
+            requires valid_next_events(ev_queue)
             requires |ev_queue| > 0
-            ensures valid_event_queue(ev_queue[1..])
+            ensures valid_next_events(ev_queue[1..])
         lemma valid_queue_append(ev_queue : seq<LocEvent>, ev : LocEvent)
-            requires valid_event_queue(ev_queue)
+            requires valid_next_events(ev_queue)
             requires |ev_queue| > 0 ==> valid_next_event(ev_queue[|ev_queue|-1], ev)
-            ensures valid_event_queue(ev_queue + [ev])            
+            ensures valid_next_events(ev_queue + [ev])            
 
         lemma valid_queue_prepend(ev : LocEvent, ev_queue : seq<LocEvent>)
-            requires valid_event_queue(ev_queue)
+            requires valid_next_events(ev_queue)
             requires |ev_queue| > 0 ==> valid_next_event(ev, ev_queue[0])
-            ensures valid_event_queue([ev] + ev_queue)            
+            ensures valid_next_events([ev] + ev_queue)            
 
 
-        lemma valid_event_queue_implies_valid_time(ev_queue : seq<LocEvent>)
-            requires valid_event_queue(ev_queue)
-            ensures  |ev_queue| > 0 ==> ev_queue[0].time == ev_queue[0].natTime % T
+        // lemma valid_event_queue_implies_valid_time(ev_queue : seq<LocEvent>)
+        //     requires valid_event_queue(ev_queue)
+        //     ensures  |ev_queue| > 0 ==> ev_queue[0].time == ev_queue[0].natTime % T
 
         constructor ()
 
         method ProcessEvent(i : nat, eq : seq<LocEvent>) returns (j : nat)
             requires |eq| > 0
-            requires valid_event_queue(eq)
+            requires valid_next_events(eq)
             requires valid_event_times(this.state, eq)
-            requires inter_event_invariant(this.state, eq[0], eq[1..], lastNatTime)
+            requires pre_dispatch(this.state, eq[0], eq[1..], lastNatTime)
+            requires valid_timestamps(eq)
+            requires ordered_timestamps(eq)
             requires lastNatTime <= eq[0].natTime
             requires this.natTime == eq[0].natTime
             requires this.time == eq[0].time
             modifies this`queue, this.state, this`lastNatTime, this`natTime, this`time
         {
-            
-            valid_event_queue_implies_valid_time(eq);
-            assert (eq[0].time == eq[0].natTime % T);
             if (i <= 0) {
                 j := 0;
             }
@@ -117,7 +148,7 @@ abstract module LucidBase {
                 var ev_head := eq[0];
                 var eq_tail := eq[1..];
                 this.queue := eq_tail;
-                assert inter_event_invariant(this.state, ev_head, queue, lastNatTime);                
+                assert pre_dispatch(this.state, ev_head, queue, lastNatTime);                
                 Dispatch(ev_head);
                 // if the queue is now empty, we are done
                 if (queue == []) {
@@ -150,43 +181,26 @@ abstract module LucidBase {
             }
         }
 
-        predicate correct_internal_time(cur_ev : LocEvent)
-            reads this`natTime, this`time
-        {
-            this.natTime == cur_ev.natTime
-            && this.time    == cur_ev.time
-            && this.time    == this.natTime % T            
-        }
         method Dispatch(cur_ev : LocEvent)
             modifies this.state, this`queue
-            // at the start of dispatch, the user event invariant must hold for the current event
-            requires inter_event_invariant(this.state, cur_ev, this.queue, this.lastNatTime)
-            // and the event must be part of a valid sequence of events
-            requires valid_event_queue([cur_ev] + this.queue)
-            requires valid_event_times(this.state, [cur_ev] + this.queue)    
             requires correct_internal_time(cur_ev)
-            requires this.natTime >= this.lastNatTime
-            // after processing, if the queue has more items in it to process, 
-            // then the user event invariant holds over:
-            //   - the new state
-            //   - any event ev that is a valid next event from the current event
-            //   - the queue of remaining packets after the first one
-            // essentially, this is saying: 
-            //   no matter what the next event is, the invariant will hold in 
-            //   the current state and the remaining event queue
+
+            requires valid_timestamps([cur_ev] + queue)
+            requires ordered_timestamps([cur_ev] + queue)
+            requires valid_event_times(this.state, [cur_ev] + this.queue)    
+            requires valid_next_events([cur_ev] + this.queue)
+            requires pre_dispatch(this.state, cur_ev, this.queue, this.lastNatTime)
+
+            ensures valid_timestamps([cur_ev] + queue)
+            ensures ordered_timestamps([cur_ev] + queue)
+            ensures valid_next_events([cur_ev] + this.queue)
+            ensures valid_event_times(this.state, [cur_ev] + this.queue)
+            ensures post_dispatch(state, queue, natTime)
+            // alternative post_dispatch: 
             // ensures (
             //     |queue| > 0 ==> 
             //         (forall ev : LocEvent | valid_next_event(cur_ev, ev) :: inter_event_invariant(this.state, ev, this.queue[1..], cur_ev.natTime))
             // )
-            /* 
-                maybe we can do something weaker / simpler: 
-                if there's an event in the queue, then it must be a valid next event and the inter-event invariant must hold?
-            */
-            ensures post_dispatch(state, queue, natTime)
-            // and the event must still be part of a valid sequence of events
-            // is this necessary any more?
-            ensures  valid_event_queue([cur_ev] + this.queue)
-            ensures  valid_event_times(this.state, [cur_ev] + this.queue)
 
 
 
@@ -202,13 +216,13 @@ abstract module LucidBase {
         // TODO: the verification in generate is complicated and somewhat disorganized. 
         // How much is necessary?
         method Generate(cur_ev : LocEvent, e : Event, out_natTime : nat)
-            requires valid_event_queue([cur_ev]+queue)
+            requires valid_next_events([cur_ev]+queue)
             // if the queue is non-empty, then this is a valid event to attach at the end of it
             requires |queue| > 0 ==> valid_next_event(queue[|queue|-1], LocEvent(e, out_natTime % T, out_natTime))
             // if the queue is empty, the event is valid to arrive immediately after the current event
             requires |queue| == 0 ==> valid_next_event(cur_ev, LocEvent(e, out_natTime % T, out_natTime))
             modifies this`queue
-            ensures valid_event_queue([cur_ev] + queue)
+            ensures valid_next_events([cur_ev] + queue)
             // ensures valid_event_queue_implies_valid_head([cur_ev] + this.queue)
         {
             var out_ev   := LocEvent(e, out_natTime % T, out_natTime);
@@ -223,9 +237,9 @@ abstract module LucidBase {
             assert |queue| > 0 ==> valid_next_event(cur_ev, queue[0]);
             queue := new_queue;
             assert valid_next_event(cur_ev, queue[0]);
-            assert valid_event_queue(queue);
+            assert valid_next_events(queue);
             valid_queue_prepend(cur_ev, queue);
-            assert valid_event_queue([cur_ev] + queue);
+            assert valid_next_events([cur_ev] + queue);
             // we've changed the queue. So we have to prove that the condition still holds.                         
             valid_event_queue_implies_valid_head([cur_ev] + this.queue);
 
