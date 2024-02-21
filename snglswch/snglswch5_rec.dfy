@@ -91,6 +91,20 @@ module LucidProg refines LucidBase {
       }
 
 
+      ghost function valid_event_time(gs : GhostState, ev : LocEvent) : bool 
+      {
+         ev.natTime < gs.natTimeOn + T
+      }
+
+      lemma greater_time_on_preserves_valid_event_time(gs_old : GhostState, gs_new : GhostState, evs : seq<LocEvent>)
+         requires gs_new.natTimeOn >= gs_old.natTimeOn 
+         requires (forall i | 0 <= i < |evs| :: valid_event_time(gs_old, evs[i]))
+         ensures (forall i | 0 <= i < |evs| :: valid_event_time(gs_new, evs[i]))
+
+
+
+
+
       /*** the inter-event invariant ***/
       ghost predicate pre_dispatch(s : State, gs : GhostState, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
       {
@@ -160,11 +174,40 @@ module LucidProg refines LucidBase {
             case cur_ev.e.NOOP? => {}
             case cur_ev.e.ProcessPacket? => {}
             case cur_ev.e.SetFiltering? => {}
+      }
 
-         // if (|queue| > 0) {
-            
-            // assert protecting(state, queue[0].natTime) <==> protectImplmnt(state, queue[0].time);
-         // }
+      method processPacket (cur_ev : LocEvent) returns (forwarded: bool)  
+         modifies this.state, this`queue, this`gstate
+         requires cur_ev.e.ProcessPacket? 
+         // same requirements as dispatch
+         requires correct_internal_time(cur_ev)
+         requires valid_timestamps([cur_ev] + queue)
+         requires ordered_timestamps([cur_ev] + queue)
+         requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
+         requires valid_next_events([cur_ev] + this.queue)
+         requires pre_dispatch(this.state, gstate, cur_ev, this.queue, this.lastNatTime)
+
+         /* pasting in requirements from old version -- TODO: what's necessary? */
+         requires natTime >= lastNatTime
+         requires natTime - lastNatTime < T - I
+         
+         ensures (  ! cur_ev.e.dnsRequest && protecting (state, gstate, natTime)
+               && (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
+               ==> ! forwarded   // Adaptive Protection, needs exactness
+
+         // ensures ! forwarded ==>                           // Harmlessness
+         //       (  ! e.dnsRequest && (! (e.uniqueSig in state.preFilterSet))  )
+         // ensures post_dispatch(state, queue, natTime)
+         // requires natTime < state.actualTimeOn + T // See note in inter-event invariant
+         // ensures  valid_event_queue([cur_ev] + this.queue)
+      {
+         // 
+         if (cur_ev.e.dnsRequest) {
+            forwarded := processRequest(cur_ev);
+         } else {
+            state.preFilterSet := state.requestSet;                           // ghost  
+            forwarded := processReply(cur_ev);
+         }
       }
 
       method processRequest(cur_ev : LocEvent) returns (forwarded: bool)
@@ -191,19 +234,6 @@ module LucidProg refines LucidBase {
 
       }
 
-      ghost function valid_event_time(gs : GhostState, ev : LocEvent) : bool 
-      {
-         ev.natTime < gs.natTimeOn + T
-      }
-
-      lemma greater_time_on_preserves_valid_event_time(gs_old : GhostState, gs_new : GhostState, evs : seq<LocEvent>)
-         requires gs_new.natTimeOn >= gs_old.natTimeOn 
-         requires (forall i | 0 <= i < |evs| :: valid_event_time(gs_old, evs[i]))
-         ensures (forall i | 0 <= i < |evs| :: valid_event_time(gs_new, evs[i]))
-
-
-
-
       method processReply (cur_ev : LocEvent) returns (forwarded: bool)
          modifies this.state, this`queue, this`gstate
          requires cur_ev.e.ProcessPacket? 
@@ -218,16 +248,20 @@ module LucidProg refines LucidBase {
          requires !cur_ev.e.dnsRequest
          requires natTime >= lastNatTime
          requires natTime - lastNatTime < T - I
-         requires natTime < gstate.natTimeOn + T         
-         ensures (  ! cur_ev.e.dnsRequest && protecting (state, gstate, natTime)
-               && (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
-               ==> ! forwarded   // Adaptive Protection, needs exactness
+         requires natTime < gstate.natTimeOn + T   
+         requires state.preFilterSet == state.requestSet
+      
 
          ensures valid_timestamps([cur_ev] + queue)
          ensures ordered_timestamps([cur_ev] + queue)
          ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
          ensures valid_next_events([cur_ev] + this.queue) // NOTE: this is the hard one!         
          ensures post_dispatch(state, gstate, queue, natTime)
+         ensures (  ! cur_ev.e.dnsRequest && protecting (state, gstate, natTime)
+               && (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
+               ==> ! forwarded   // Adaptive Protection, needs exactness
+         ensures ! forwarded ==>                           // Harmlessness
+                  (  ! cur_ev.e.dnsRequest && (! (cur_ev.e.uniqueSig in state.preFilterSet))  )
 
       {
 
@@ -273,7 +307,7 @@ module LucidProg refines LucidBase {
                   // TODO: refactor so that generate doesn't need these extra arguments
                   generate_time_is_valid(cur_ev, queue);
                   Generate(cur_ev, SetFiltering(true), next_generate_time(natTime, queue));
-                  assert post_dispatch(state, gstate, queue, natTime);                  
+                  assert post_dispatch(state, gstate, queue, natTime);  // to accelerate verification                
                   // FI
                }  // else recirc already generated, do nothing
             }  
@@ -302,7 +336,7 @@ module LucidProg refines LucidBase {
                      forall_implies_valid_event_times(new_gstate, [cur_ev] + this.queue);
                      gstate := new_gstate;
                      assert valid_event_times(this.gstate, [cur_ev] + this.queue);
-                     assert post_dispatch(state, gstate, queue, natTime);                  
+                     assert post_dispatch(state, gstate, queue, natTime);         // to accelerate verification          
                      // assert post_dispatch(state, gstate, queue, natTime);
 
                   }
@@ -321,8 +355,7 @@ module LucidProg refines LucidBase {
                         // TODO: refactor so that generate doesn't need these extra arguments
                         generate_time_is_valid(cur_ev, queue);
                         Generate(cur_ev, SetFiltering(false), next_generate_time(natTime, queue));                        
-                        assert post_dispatch(state, gstate, queue, natTime);                  
-                        // assert post_dispatch(state, gstate, queue, natTime);
+                        assert post_dispatch(state, gstate, queue, natTime);            // to accelerate verification       
                         // FI
                      }  // else recirc already generated, do nothing
                   }
@@ -330,51 +363,62 @@ module LucidProg refines LucidBase {
             } // end boundary-crossing case
             else {  tmpTimeOn := state.timeOn; }                    // get memop
          } // end filtering case
-         // assert post_dispatch(state, gstate, queue, natTime);
+         assert post_dispatch(state, gstate, queue, natTime);
 
          // Filtering decision:
          // if filtering off, it won't matter that timeOn not read
          if tmpFiltering && elapsedTime (time, tmpTimeOn) >= Q {
-            forwarded := false;//   filter (dnsRequest, uniqueSig);
+            forwarded := filter(cur_ev);
          }
          else {  forwarded := true; }
       }
 
-
-
-
-      method processPacket (cur_ev : LocEvent) returns (forwarded: bool)  
-         modifies this.state, this`queue, this`gstate
-         requires cur_ev.e.ProcessPacket? 
-         // same requirements as dispatch
-         requires correct_internal_time(cur_ev)
-         requires valid_timestamps([cur_ev] + queue)
-         requires ordered_timestamps([cur_ev] + queue)
-         requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
-         requires valid_next_events([cur_ev] + this.queue)
-         requires pre_dispatch(this.state, gstate, cur_ev, this.queue, this.lastNatTime)
-
-         /* pasting in requirements from old version -- TODO: what's necessary? */
-         requires natTime >= lastNatTime
-         requires natTime - lastNatTime < T - I
-         
-         ensures (  ! cur_ev.e.dnsRequest && protecting (state, gstate, natTime)
-               && (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
+      method filter
+         (cur_ev : LocEvent) 
+                                                returns (forwarded: bool)  
+         requires cur_ev.e.ProcessPacket?
+         modifies this.state
+         requires ! cur_ev.e.dnsRequest
+         requires protectImplmnt (state, time)
+         requires state.preFilterSet == state.requestSet
+         requires parameterConstraints ()
+         requires stateInvariant (state, gstate, queue, time, natTime, lastNatTime)
+         ensures protectImplmnt (state, time)
+         ensures (   (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
                ==> ! forwarded   // Adaptive Protection, needs exactness
-
-         // ensures ! forwarded ==>                           // Harmlessness
-         //       (  ! e.dnsRequest && (! (e.uniqueSig in state.preFilterSet))  )
-         // ensures post_dispatch(state, queue, natTime)
-         // requires natTime < state.actualTimeOn + T // See note in inter-event invariant
-         // ensures  valid_event_queue([cur_ev] + this.queue)
+         ensures ! forwarded ==>                           // Harmlessness
+               (  ! cur_ev.e.dnsRequest && (! (cur_ev.e.uniqueSig in state.preFilterSet))  )
+         ensures stateInvariant (state, gstate, queue, time, natTime, lastNatTime)
       {
-         // 
-         if (cur_ev.e.dnsRequest) {
-            forwarded := processRequest(cur_ev);
-         } else {
-            forwarded := processReply(cur_ev);
+         forwarded := bloomFilterQuery (cur_ev.e.uniqueSig);               // memop
+         if forwarded {      // if positive is false, has no effect; ghost
+            state.requestSet := state.requestSet - { cur_ev.e.uniqueSig };             // ghost
          }
       }
+
+
+
+      method {:extern} bloomFilterInsert (uniqueSig: nat)
+
+      method {:extern} bloomFilterQuery (uniqueSig: nat)
+                                                   returns (inSet: bool)
+      // No false negatives:
+      // A sliding-window Bloom filter automatically deletes set members
+      // shortly after a guaranteed tenancy W.  You might imagine that
+      // this would be a source of false negatives.  However, it is not,
+      // because a request never needs to stay in the set longer than Q,
+      // where Q <= W.
+         ensures uniqueSig in state.requestSet ==> inSet
+      // No false positives:
+      // Not true, but used to prove Adaptive Protection as a sanity
+      // check.  (If deleted, Adaptive Protection cannot be proved.)  This
+      // property can be false for two reasons: (1) it is the nature of
+      // a Bloom filter to yield false positives sometimes; (2) in a
+      // sliding-window Bloom filter, there are no timely deletions, just
+      // scheduled timeouts which can be delayed.
+         ensures ! (uniqueSig in state.requestSet) ==> (! inSet)
+
+
     }
 
 
