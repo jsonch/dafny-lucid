@@ -3,7 +3,8 @@ include "lucid_base_rec.dfy"
 module LucidProg refines LucidBase {
 
     datatype Event = 
-      | NOOP()
+      | SimulatedClockTick()
+      | HardwareFailure()
       | ProcessPacket(dnsRequest: bool, uniqueSig: nat)
       | SetFiltering(on : bool)
       
@@ -151,14 +152,76 @@ module LucidProg refines LucidBase {
       method Dispatch(cur_ev : LocEvent)
       {  
          if 
-            case cur_ev.e.NOOP? => {
-               // recirc_invariant_tail(state, [cur_ev] + queue);
-               // if (|queue| > 0) {
-               //    recirc_invariant_tail(state, queue);
-               // }
-            }            
             case cur_ev.e.ProcessPacket? => {var forwarded := processPacket(cur_ev);}
             case cur_ev.e.SetFiltering? => {setFiltering(cur_ev);}
+
+            // "ghost" events that are just for verification. 
+            // not sure if these should be events, or just functions 
+            // that assert the proper start and end conditions
+            case cur_ev.e.SimulatedClockTick? => {simulatedClockTick(cur_ev);}            
+            case cur_ev.e.HardwareFailure? => {hardwareFailure(cur_ev);}
+      }
+
+      method simulatedClockTick(cur_ev : LocEvent)
+         requires cur_ev.e.SimulatedClockTick?
+         requires correct_internal_time(cur_ev)
+         requires valid_timestamps([cur_ev] + queue)
+         requires ordered_timestamps([cur_ev] + queue)
+         requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
+         requires valid_next_events([cur_ev] + this.queue)
+         requires pre_dispatch(this.state, gstate, cur_ev, this.queue, this.lastNatTime)
+
+         // requires (natTime + 1) < gstate.natTimeOn + T
+
+         ensures valid_timestamps([cur_ev] + queue)
+         ensures ordered_timestamps([cur_ev] + queue)
+         ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
+         ensures valid_next_events([cur_ev] + this.queue)         
+         ensures post_dispatch(state, gstate, queue, natTime)
+      {
+         // NOTE: we don't want to propagate the (natTime + 1) < gstate.natTimeOn + T
+         //       constraint all the way through the program, so in this method, we just 
+         //       verify that the invariant holds when that constraint is true
+         if (natTime + 1 < gstate.natTimeOn + T) {
+            var timePlus : bits := (time + 1) % T;
+            var natTimePlus : nat := natTime + 1;
+            assert timePlus == natTimePlus % T;
+            assert state.filtering ==>                                 // invariant
+               (natTime >=gstate.natTimeOn + Q as nat <==> (time -state.timeOn) % T >= Q);
+            // show time-sensitive invariant holds after clock tick
+            assert state.filtering ==>
+                  (protecting (state, gstate, natTimePlus) <==> protectImplmnt (state, timePlus));   
+         }
+         recirc_invariant_tail(state, [cur_ev] + queue);
+      }
+      method hardwareFailure (cur_ev : LocEvent)           // ghost
+         modifies this.state, this`gstate, this`queue
+         requires correct_internal_time(cur_ev)
+         requires valid_timestamps([cur_ev] + queue)
+         requires ordered_timestamps([cur_ev] + queue)
+         requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
+         requires valid_next_events([cur_ev] + this.queue)
+         requires pre_dispatch(this.state, gstate, cur_ev, this.queue, this.lastNatTime)
+
+         // requires (natTime + 1) < gstate.natTimeOn + T
+
+         ensures valid_timestamps([cur_ev] + queue)
+         ensures ordered_timestamps([cur_ev] + queue)
+         ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
+         ensures valid_next_events([cur_ev] + this.queue)         
+         ensures post_dispatch(state, gstate, queue, natTime)
+      { 
+         recirc_invariant_tail(state, [cur_ev] + queue);
+         state.filtering, state.recircPending := false, false;
+         // NOTE: we assume that the hardware failure "event" carries 
+         //       the timestamp at which the hardware "starts back up"
+         //       This lets us reuse all the existing post conditions.
+         //       (i.e., set timeOn and associated variables to the 
+         //       time of the event rather than 0)
+         state.lastIntv, state.count, state.timeOn, state.actualTimeOn := 0, 0, time, natTime;
+         state.requestSet := {};
+         gstate := gstate.(natTimeOn := natTime);  
+         queue := [];
       }
 
       method setFiltering(cur_ev : LocEvent) 
@@ -283,7 +346,7 @@ module LucidProg refines LucidBase {
             state.requestSet := state.requestSet + { cur_ev.e.uniqueSig }; }           // ghost
          forwarded := true;
       }
-      
+
 
       method processReply (cur_ev : LocEvent) returns (forwarded: bool)
          modifies this.state, this`queue, this`gstate

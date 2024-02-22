@@ -225,6 +225,7 @@ abstract module LucidBase {
             ensures ordered_timestamps([cur_ev] + queue)
             ensures valid_next_events([cur_ev] + this.queue)
             ensures valid_event_times(this.gstate, [cur_ev] + this.queue)
+
             ensures post_dispatch(state, gstate, queue, natTime)
             // alternative post_dispatch: 
             // ensures (
