@@ -110,7 +110,7 @@ module LucidProg refines LucidBase {
          && (natTime - lastNatTime < T - I)
          && stateInvariant(s, gs, cur_ev.time, cur_ev.natTime)
          // && (natTime < s.actualTimeOn + T) // now enforced by valid_event_time
-         // && recircInvariant(state, es)
+         && recircInvariant(s, [cur_ev] + ev_queue)
          // && (  state.recircPending ==> (state.filtering == ! state.recircSwitch)  )
       }
 
@@ -178,13 +178,18 @@ module LucidProg refines LucidBase {
          ensures valid_next_events([cur_ev] + this.queue) // NOTE: this is the hard one!         
          ensures post_dispatch(state, gstate, queue, natTime)
       {
-         // assert recircInvariant(state, queue);
-         // assert count_f([cur_ev], is_setfiltering) == 1;
-         // LemmaCountSumGtFilterSeq([cur_ev], queue, is_setfiltering);
-         // assert count_f([cur_ev]+queue, is_setfiltering) >= 1;
-         // assert (state.recircPending);
-
-
+         // goal: prove that no other events in the queue can be setFiltering events. 
+         // steps: 
+         // 1. this is a setFiltering event.
+         // 2. by "LemmaCountSumGtFilterSeq" the current and pending events queue ([e] + event_queue) has at least one setFiltering.
+         // 3. by "inter_event_invariant", state.recircPending is true
+         // 4. by "inter_event_invariant", there is EXACTLY one setFiltering in ([e] + event_queue)
+         // 5. by dafny's automated solver, since [e] is a setFiltering, there are no setFiltering events in event_queue
+         assert recircInvariant(state, [cur_ev]+queue);
+         assert count_f([cur_ev], is_setfiltering) == 1;
+         LemmaCountSumGtFilterSeq([cur_ev], queue, is_setfiltering);
+         assert count_f([cur_ev]+queue, is_setfiltering) >= 1;
+         assert (state.recircPending);
 
          var tmpFiltering : bool := cur_ev.e.on;               // get memop . . . .
          state.filtering :=  cur_ev.e.on;                             // with update memop
@@ -210,9 +215,6 @@ module LucidProg refines LucidBase {
 
          }
       }
-
-
-
 
       method processPacket (cur_ev : LocEvent) returns (forwarded: bool)  
          modifies this.state, this`queue, this`gstate
@@ -273,17 +275,15 @@ module LucidProg refines LucidBase {
          ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
          ensures valid_next_events([cur_ev] + this.queue) // NOTE: this is the hard one!         
          ensures post_dispatch(state, gstate, queue, natTime)
-
-
-
       {
+         recirc_invariant_tail(state, [cur_ev]+queue);
          var tmpFiltering : bool := state.filtering;                // get memop
          if (tmpFiltering) {  
             bloomFilterInsert (cur_ev.e.uniqueSig);                        // memop
             state.requestSet := state.requestSet + { cur_ev.e.uniqueSig }; }           // ghost
          forwarded := true;
       }
-
+      
 
       method processReply (cur_ev : LocEvent) returns (forwarded: bool)
          modifies this.state, this`queue, this`gstate
@@ -315,6 +315,7 @@ module LucidProg refines LucidBase {
                   (  ! cur_ev.e.dnsRequest && (! (cur_ev.e.uniqueSig in state.preFilterSet))  )
 
       {
+         recirc_invariant_tail(state, [cur_ev]+queue);
 
          // Changes to measurement state:
          // Increment or reset count.  If there is an interval with no reply
@@ -356,8 +357,21 @@ module LucidProg refines LucidBase {
                   // ELSE
                   // state.recircSwitch := true;                           // ghost
                   // TODO: refactor so that generate doesn't need these extra arguments
+
+                  ghost var old_queue := queue;
+                  var t:nat := next_generate_time(natTime, queue);
+                  var new_event := LocEvent(SetFiltering(true), t%T, t);
                   generate_time_is_valid(cur_ev, queue);
-                  Generate(cur_ev, SetFiltering(true), next_generate_time(natTime, queue));
+                  Generate(cur_ev, SetFiltering(true), t);
+                  // assert queue == old_queue + [new_event];
+                  // assert count_f(old_queue, is_setfiltering_true) == 0;
+                  // assert count_f([new_event], is_setfiltering_true) == 1;
+                  LemmaCountSumFilterSeq(old_queue, [new_event], is_setfiltering_true);
+                  // assert count_f(old_queue, is_setfiltering) == 0;
+                  // assert count_f([new_event], is_setfiltering) == 1;
+                  LemmaCountSumFilterSeq(old_queue, [new_event], is_setfiltering);
+                  // assert count_f(queue, is_setfiltering_true) == 1;
+                  // assert count_f(queue, is_setfiltering) == 1;
                   assert post_dispatch(state, gstate, queue, natTime);  // to accelerate verification                
                   // FI
                }  // else recirc already generated, do nothing
@@ -387,10 +401,15 @@ module LucidProg refines LucidBase {
                      forall_implies_valid_event_times(new_gstate, [cur_ev] + this.queue);
                      gstate := new_gstate;
                      assert valid_event_times(this.gstate, [cur_ev] + this.queue);
+                     recirc_invariant_tail(state, [cur_ev]+queue); // we just need to know that 
+                     // if the recirc invariant held on the input, it holds on the output
                      assert post_dispatch(state, gstate, queue, natTime);         // to accelerate verification          
                      // assert post_dispatch(state, gstate, queue, natTime);
-
                   }
+                  else {
+                     recirc_invariant_tail(state, [cur_ev]+queue);
+                  }
+                  assert post_dispatch(state, gstate, queue, natTime);
                }
                else { // oldCount < L
                   tmpTimeOn := state.timeOn;                        // get memop
@@ -404,8 +423,13 @@ module LucidProg refines LucidBase {
                         // ELSE
                         // state.recircSwitch := false;                    // ghost
                         // TODO: refactor so that generate doesn't need these extra arguments
+                        ghost var old_queue := queue;
+                        var t:nat := next_generate_time(natTime, queue);
+                        var new_event := LocEvent(SetFiltering(false), t%T, t);
                         generate_time_is_valid(cur_ev, queue);
                         Generate(cur_ev, SetFiltering(false), next_generate_time(natTime, queue));                        
+                        LemmaCountSumFilterSeq(old_queue, [new_event], is_setfiltering_false);
+                        LemmaCountSumFilterSeq(old_queue, [new_event], is_setfiltering);
                         assert post_dispatch(state, gstate, queue, natTime);            // to accelerate verification       
                         // FI
                      }  // else recirc already generated, do nothing
@@ -419,9 +443,12 @@ module LucidProg refines LucidBase {
          // Filtering decision:
          // if filtering off, it won't matter that timeOn not read
          if tmpFiltering && elapsedTime (time, tmpTimeOn) >= Q {
+            assert post_dispatch(state, gstate, queue, natTime);
             forwarded := filter(cur_ev);
+            assert post_dispatch(state, gstate, queue, natTime);
          }
          else {  forwarded := true; }
+         assert post_dispatch(state, gstate, queue, natTime);
       }
 
       method filter
@@ -433,21 +460,22 @@ module LucidProg refines LucidBase {
          requires protectImplmnt (state, time)
          requires state.preFilterSet == state.requestSet
          requires parameterConstraints ()
-         requires stateInvariant (state, gstate, queue, time, natTime, lastNatTime)
+         requires stateInvariant (state, gstate, time, natTime)
+         requires post_dispatch(state, gstate, queue, natTime)
+
          ensures protectImplmnt (state, time)
          ensures (   (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
                ==> ! forwarded   // Adaptive Protection, needs exactness
          ensures ! forwarded ==>                           // Harmlessness
                (  ! cur_ev.e.dnsRequest && (! (cur_ev.e.uniqueSig in state.preFilterSet))  )
          ensures stateInvariant (state, gstate, time, natTime)
+         ensures post_dispatch(state, gstate, queue, natTime)
       {
          forwarded := bloomFilterQuery (cur_ev.e.uniqueSig);               // memop
          if forwarded {      // if positive is false, has no effect; ghost
             state.requestSet := state.requestSet - { cur_ev.e.uniqueSig };             // ghost
          }
       }
-
-
 
       method {:extern} bloomFilterInsert (uniqueSig: nat)
 

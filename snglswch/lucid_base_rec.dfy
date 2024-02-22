@@ -274,7 +274,7 @@ abstract module LucidBase {
                 && cur_ev.natTime <= out_natTime
             )
             modifies this`queue
-
+            ensures this.queue == old(this.queue) + [LocEvent(e, out_natTime % T, out_natTime)]
             ensures valid_timestamps([cur_ev] + queue)
             ensures ordered_timestamps([cur_ev] + queue)
             ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
