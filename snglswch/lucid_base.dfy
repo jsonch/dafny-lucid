@@ -1,265 +1,297 @@
-/*  1/31/24
-    TODO: update this
-    This module encodes the semantics of event-based processing in Lucid. 
-    To write a Lucid-compatible Dafny program, extend this module 
-    with a concrete implementation that defines: 
-    --- OUTDATED: instructions below do not reflect 2/24 changes ---
-
-    1. datatype Event
-        - should include one datatype constructor for each event
-    2. class State
-        - declare one "var" for each global in the lucid program
-        - extend the constructor to initialize each global var
-    3. class Handlers
-        - define a handler method for each event
-            - invariants: a handler must ensure two invariants:
-                1. "inter_event_invariant"
-                2. "valid_generate"
-            - builtins: a handler should use the builtins: 
-                - "Generate(e)" to generate an event e for later processing.
-                - "Array_<get | set | update>" to update state. (NOT IMPLEMENTED YET)
-        - extend the "Dispatch(e : Event)" method to call the appropriate handler 
-          for each event. This should basically just be a switch / case statement.
-        - extend the "inter_event_invariant" with whatever conditions your program 
-          needs to hold in between events. This invariant relates the mutable state 
-          of the program to the contents of the event queue. 
-          - By default, the invariant is empty.
-          - Dispatch requires inter_event_invariant to hold at the start of each 
-            event's processing, and ensures that it holds after it completes
-        - extend the constructor to ensure the "inter_event_invariant"
-            - we cannot make the base constructor ensure the invariant because 
-
-
-TODO: 
-    1. add in arrays + memops
-*/
-
+// This one seems like it will work! 
+// Phrasing it as a recursive method
+// made it a _lot_ easier to reason about
 
 abstract module LucidBase {
-   type bits = x : int | 0 <= x < 256                 // number must match
-                                                      // the parameter T
-   const T : nat := 256
+    type bits = x : int | 0 <= x < 256                 // number must match
+    const T : nat := 256
+    type Event (==)
+    datatype LocEvent = LocEvent(e : Event, time : bits, natTime : nat)
+    
+    type GhostState (==)
 
-    type Event(==)
-    datatype EventTime = EventTime(time : bits, ghost natTime : nat)
     class State {
         constructor () 
             ensures fresh(this)
         { }
     }
-
-    
-    // helpers to reason about event queue contents
-    function count_f<T>(ls : seq<T>, f : (T -> bool)) : int
-    {
-        if (ls == []) then 0
-        else (
-            if (f(ls[0]))
-            then (1 + count_f(ls[1..], f))
-            else (count_f(ls[1..], f))
-        )
-    }
-    lemma LemmaCountSumFilterSeq<T>(a : seq<T>, b : seq<T>, f : (T -> bool))
-    ensures count_f(a + b, f) == count_f(a, f) + count_f(b, f)
-
-    lemma LemmaCountSumGtFilterSeq<T>(a : seq<T>, b : seq<T>, f : (T -> bool))
-    ensures count_f(a + b, f) > count_f(a, f)
-    ensures count_f(a + b, f) > count_f(b, f)
-
-
     class Handlers {
+
+
+        // state and event queue are mutable for user-facing abstractions
         var state : State
-        var event_queue : seq<Event>
-        var event_times : seq<EventTime>
-        var last_event_nattime : nat // the arrival time of the last event queued thus far
-        var out_queue : seq<Event>
-        
-        ghost var lastNatTime : nat
+        ghost var gstate : GhostState
+        var queue : seq<LocEvent> // event * timestamp
 
-        ghost var natTime : nat
-        ghost var time : bits
+        var time    : bits // We need time as a class variable because we want an 
+                           // imperative way of getting the current time in the program code. 
+                           // i.e., in Lucid, we don't "look at the timestamp on the event", 
+                           // we call "Sys.time()"
+        var natTime : nat
+        var lastNatTime : nat
 
-        /******* event time predicates  *******/
-
-        ghost function base_inter_event_time_invariant(eventTimes: seq<EventTime>) : bool
-            // if the eventTimes is non-empty, then invariant holding for all the 
-            // event times must imply that the invariant holds for the tail of the 
-            // event times
-            // ensures base_inter_event_time_invariant(eventTimes) ==> 
-            ensures (|eventTimes| > 0) ==> base_inter_event_time_invariant(eventTimes) ==>  base_inter_event_time_invariant(eventTimes[1..])
+        /***   user-defined predicates   ***/
+        // the event "next" is a valid event to come after "cur"
+        ghost predicate valid_next_event(cur : LocEvent, next : LocEvent)
+        ghost predicate valid_next_events(ev_queue : seq<LocEvent>)
         {
-            match |eventTimes| {
-                // emtpy queue -- fine
+            match |ev_queue| {
                 case 0 => true
-                // 1 element in queue -- bit time must be correct
-                case 1 => 
-                        (eventTimes[0].time == eventTimes[0].natTime % T)
-                    &&  base_inter_event_time_invariant(eventTimes[1..])
-                // multiple elements in queue -- bit time must be correct and ordering preserved for first two elements
+                case 1 => true
                 case _ => 
-                        (eventTimes[0].time == eventTimes[0].natTime % T)
-                    &&  (eventTimes[0].natTime <= eventTimes[1].natTime)
-                    &&  base_inter_event_time_invariant(eventTimes[1..])
-            }
+                   valid_next_event(ev_queue[0], ev_queue[1])
+                    && valid_next_events(ev_queue[1..])
+            }            
         }
-
-        ghost function user_inter_event_time_invariant(eventTimes : seq<EventTime>) : bool
-            // the user-provided event timing invariant must preserve the 
-            // base event timing invariant
-            // ensures (inter_event_time_invariant(eventTimes) ==> base_inter_event_time_invariant(eventTimes))
-            ensures (|eventTimes| > 0) ==> user_inter_event_time_invariant(eventTimes) ==> user_inter_event_time_invariant(eventTimes[1..])
-
-
-        ghost predicate event_timing_invariant(eventTimes : seq<EventTime>)
-            reads this`lastNatTime
-        {
-            base_inter_event_time_invariant(eventTimes)
-            && user_inter_event_time_invariant(eventTimes)
-            // && (forall i :: 0 <= i < |eventTimes| ==> eventTimes[i].natTime >= lastNatTime)            
-            && (|eventTimes| > 0 ==> eventTimes[0].natTime >= lastNatTime)
-        } 
-
-        /***  the primary inter-event invariant ***/
-        // this should: 
-        // always hold on q.pre_handler_contents
-        // hold on q.contents before and after handler execution
-        ghost predicate inter_event_invariant(s : State, es : seq<Event>, ts : seq<EventTime>, lastNatTime : nat)
-            reads s
         
-        constructor()
-            ensures (fresh(state))
-            ensures (this.event_queue == [])
-            ensures (|this.event_times| == |this.event_queue|)
-            ensures event_timing_invariant(this.event_times)
-
-        //     {
-        //      state := new State();   
-        //      event_queue := [];
-        //      natTime, lastNatTime := 1, 0;
-        //      time := 1;
-        //     }
-
-        // run the program on the event queue for up to "r" events
-        method Run(r : int)
-            modifies this.state, this`event_queue, this`out_queue, this`event_times,
-            this`lastNatTime, this`natTime, this`time
-            requires |event_queue| >  0
-            requires |event_queue| == |event_times|
-            requires time == event_times[0].time
-            requires natTime == event_times[0].natTime
-            requires lastNatTime < natTime
-            requires event_timing_invariant(event_times)
-            requires inter_event_invariant(state, event_queue, event_times, lastNatTime)
+        // the time of event "ev" is valid with respect to some program state "s"
+        ghost function valid_event_time(gs : GhostState, ev : LocEvent) : bool
+        ghost function valid_event_times(gs : GhostState, ev_queue : seq<LocEvent>) : bool
         {
-            var i := 0;
-            assert(inter_event_invariant(state, event_queue, event_times, lastNatTime));
-            while(i < r)
-            invariant inter_event_invariant(state, event_queue, event_times, lastNatTime)
-            invariant |event_queue| == |event_times|
-            invariant event_timing_invariant(event_times)
-            {
-                if (event_queue != []){
-                    var e, new_event_queue := dequeue(event_queue);     
-                    var et, new_event_times := dequeue(event_times);
+            match |ev_queue| {
+                case 0 => true
+                case 1 => valid_event_time(gs, ev_queue[0])
+                case _ => valid_event_time(gs, ev_queue[0]) && valid_event_times(gs, ev_queue[1..])                
+            }
+        }
+        lemma valid_event_times_implies_forall(gs : GhostState, ev_queue : seq<LocEvent>)
+            requires valid_event_times(gs, ev_queue)
+            ensures (forall i | 0 <= i < |ev_queue| :: valid_event_time(gs, ev_queue[i]))
+        lemma forall_implies_valid_event_times(gs : GhostState, ev_queue : seq<LocEvent>)
+            requires (forall i | 0 <= i < |ev_queue| :: valid_event_time(gs, ev_queue[i]))
+            ensures valid_event_times(gs, ev_queue)
 
-                    assert inter_event_invariant(state, event_queue, event_times, lastNatTime);
-                    event_queue := new_event_queue;
-                    event_times := new_event_times;
-                    // before dispatch, time == et.time and natTime == et.natTime
-                    time := et.time; 
-                    natTime := et.natTime;
-                    Dispatch(e, et);
-                    lastNatTime := et.natTime;
 
+
+        lemma valid_event_times_app(gs : GhostState, ev_queue : seq<LocEvent>, ev : LocEvent) 
+            requires valid_event_times(gs, ev_queue)
+            requires valid_event_time(gs, ev)
+            ensures valid_event_times(gs, ev_queue + [ev])
+
+        // pre_dispatch is guaranteed to hold at the beginning of every event handler's execution
+        ghost predicate pre_dispatch(s : State, gs : GhostState, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
+            reads s
+
+        // post_dispatch must hold at the end of every event handler's execution
+        // it just says that if the updated queue is not empty, 
+        // pre_dispatch holds for the next event on the updated state
+        ghost predicate post_dispatch(updated_s : State, updated_gs : GhostState, updated_queue : seq<LocEvent>, updated_lastNatTime : nat)
+            reads updated_s
+        {
+                |updated_queue| > 0 ==> 
+                        pre_dispatch(updated_s, updated_gs, updated_queue[0], updated_queue[1..], updated_lastNatTime)            
+        }
+        
+
+
+
+
+        // natural and bit representations of timestamps match
+        ghost function valid_timestamps(ev_queue : seq<LocEvent>) : bool
+        {
+            match |ev_queue| {
+                case 0 => true
+                case 1 => ev_queue[0].time == (ev_queue[0].natTime % T)
+                case _ => 
+                    ev_queue[0].time == (ev_queue[0].natTime % T)
+                    && valid_timestamps(ev_queue[1..])
+            }
+        }
+        lemma valid_timestamps_app(ev_queue : seq<LocEvent>, ev : LocEvent) 
+            requires valid_timestamps(ev_queue)
+            requires ev.time == (ev.natTime % T)
+            ensures valid_timestamps(ev_queue + [ev])
+
+        ghost function ordered_timestamps(ev_queue : seq<LocEvent>) : bool
+        {
+            match |ev_queue| {
+                case 0 => true
+                case 1 => true
+                case _ => 
+                    ev_queue[0].natTime <= ev_queue[1].natTime
+                    && ordered_timestamps(ev_queue[1..])
+            }            
+        }
+
+        predicate correct_internal_time(cur_ev : LocEvent)
+            reads this`natTime, this`time, this`lastNatTime
+        {
+            this.natTime == cur_ev.natTime
+            && this.time    == cur_ev.time
+            && this.time    == this.natTime % T  
+            && this.natTime >= this.lastNatTime          
+        }
+
+        // if the queue has at least 2 events, 
+        // the second event is a valid event to come after the first
+        lemma valid_event_queue_implies_valid_head(ev_queue : seq<LocEvent>)
+            requires valid_next_events(ev_queue)
+            ensures (match |ev_queue| {
+                case 0 => true
+                case 1 => true
+                case _ => valid_next_event(ev_queue[0], ev_queue[1])})
+        lemma valid_event_queue_implies_valid_tail(ev_queue : seq<LocEvent>)
+            requires valid_next_events(ev_queue)
+            requires |ev_queue| > 0
+            ensures valid_next_events(ev_queue[1..])
+        lemma valid_queue_append(ev_queue : seq<LocEvent>, ev : LocEvent)
+            requires valid_next_events(ev_queue)
+            requires ordered_timestamps(ev_queue)
+
+            requires |ev_queue| > 0 ==> 
+                (
+                    valid_next_event(ev_queue[|ev_queue|-1], ev)
+                    &&
+                    ev_queue[|ev_queue|-1].natTime <= ev.natTime
+                )
+            ensures valid_next_events(ev_queue + [ev])            
+            ensures ordered_timestamps(ev_queue + [ev])
+
+        lemma valid_queue_prepend(ev : LocEvent, ev_queue : seq<LocEvent>)
+            requires valid_next_events(ev_queue)
+            requires |ev_queue| > 0 ==> valid_next_event(ev, ev_queue[0])
+            ensures valid_next_events([ev] + ev_queue)            
+
+
+        // lemma valid_event_queue_implies_valid_time(ev_queue : seq<LocEvent>)
+        //     requires valid_event_queue(ev_queue)
+        //     ensures  |ev_queue| > 0 ==> ev_queue[0].time == ev_queue[0].natTime % T
+
+        constructor ()
+
+        method ProcessEvent(i : nat, eq : seq<LocEvent>) returns (j : nat)
+            requires |eq| > 0
+            requires valid_next_events(eq)
+            requires valid_event_times(this.gstate, eq)
+            requires pre_dispatch(this.state, this.gstate, eq[0], eq[1..], lastNatTime)
+            requires valid_timestamps(eq)
+            requires ordered_timestamps(eq)
+            requires lastNatTime <= eq[0].natTime
+            requires this.natTime == eq[0].natTime
+            requires this.time == eq[0].time
+            modifies this`queue, this.state, this`gstate, this`lastNatTime, this`natTime, this`time
+        {
+            if (i <= 0) {
+                j := 0;
+            }
+            else {
+                var ev_head := eq[0];
+                var eq_tail := eq[1..];
+                this.queue := eq_tail;
+                assert pre_dispatch(this.state, this.gstate, ev_head, queue, lastNatTime);                
+                Dispatch(ev_head);
+                // if the queue is now empty, we are done
+                if (queue == []) {
+                    j := i-1;
                 }
-                i := i + 1;
+                // the queue is not empty. So we recurse.
+                else {
+                    // assert valid_event_queue([ev_head] + queue);
+                    // prove that the head of the queue is a valid next event 
+                    // for event we just processed.
+                    valid_event_queue_implies_valid_head([ev_head] + queue);
+
+                    // assert valid_next_event(ev_head, queue[0]);
+                    // because of dispatch's implication assertion, the event invariant 
+                    // holds for the head of the queue, with the tail of the queue as the new queue.
+                    // assert (user_event_invariant(this.state, this.queue[0], this.queue[1..]));
+                    // also, because dispatch guarantees that the 
+                    // sequence [event_just_processed] + new_event_queue
+                    // is a valid sequence, we know that the new event queue 
+                    // by itself is a valid sequence
+                    valid_event_queue_implies_valid_tail([ev_head]+queue);
+                    // assert valid_event_queue(queue);
+                    // assert valid_event_queue(queue[1..]);
+                    // so now we can just update the times and recurse!
+                    this.lastNatTime := natTime;
+                    this.natTime := queue[0].natTime;
+                    this.time := queue[0].time;
+                    j := ProcessEvent(i-1, this.queue);
+                }
             }
         }
 
-        // A program must extend this function to handle events in a way that is 
-        // consistent with the inter event invariant. 
-        // Note that this function is not allowed to modify time variables.
-        // dispatch ensures that invariants hold for the state that the system
-        // will be in after the current iteration of the run loop completes. 
-        // So the system may not yet be in that "state" when dispatch finishes, 
-        // but it will be soon.
-        method Dispatch(e : Event, t : EventTime)
-            modifies this.state, this`event_queue, this`out_queue, this`event_times
-            // requires time_invariant()
-            requires (inter_event_invariant(state, [e]+event_queue, [t] + event_times, this.lastNatTime))
-            requires |event_queue| == |event_times|
-            requires event_timing_invariant([t] + event_times)
+        method Dispatch(cur_ev : LocEvent)
+            modifies this.state, this`queue, this`gstate
+            requires correct_internal_time(cur_ev)
+
+            requires valid_timestamps([cur_ev] + queue)
+            requires ordered_timestamps([cur_ev] + queue)
+            requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
+            requires valid_next_events([cur_ev] + this.queue)
+            requires pre_dispatch(this.state, this.gstate, cur_ev, this.queue, this.lastNatTime)
+
+            ensures valid_timestamps([cur_ev] + queue)
+            ensures ordered_timestamps([cur_ev] + queue)
+            ensures valid_next_events([cur_ev] + this.queue)
+            ensures valid_event_times(this.gstate, [cur_ev] + this.queue)
+
+            ensures post_dispatch(state, gstate, queue, natTime)
+            // alternative post_dispatch: 
+            // ensures (
+            //     |queue| > 0 ==> 
+            //         (forall ev : LocEvent | valid_next_event(cur_ev, ev) :: inter_event_invariant(this.state, ev, this.queue[1..], cur_ev.natTime))
+            // )
 
 
-            ensures |old(this.event_queue)| <= |this.event_queue|
-            ensures (old(this.event_queue) == this.event_queue[0..|old(this.event_queue)|])
-            ensures inter_event_invariant(state, event_queue, event_times, t.natTime) // CHANGE: this now holds with the _next_ lastNatTime
-            ensures |event_queue| == |event_times|
-            ensures |old(this.event_times)| <= |this.event_times|
-            ensures (old(this.event_times) == this.event_times[0..|old(this.event_times)|])
-            ensures |event_times| > 0 ==> t.natTime <= event_times[0].natTime
-            // why the above line is here:
-            /*
-            if |old_event_times| == 0: 
-                - et is the time of the last event to be processed
-                - lastNatTime <= et.natTime
-                - lastNatTime <= event_times[0]
-                - we want to say something about et.natTime and event_times
-                - but we can't -- there's no relationship
-                - any newly-generated event will have time >= lastNatTime                        
-                - generate has to set time = cur_time + 1, not lastNatTime + 1
-                - what guarantee does that translate to for dispatch? 
-                - just that et <= event_times[0] !
-            */
 
-            ensures event_timing_invariant(event_times)
-
-        // Queue an event to be processed 1 time-unit after the last event in the queue. 
-        method Generate(e : Event)
-            modifies this`event_queue
-            modifies this`event_times
-            requires |event_queue| == |event_times|
-            ensures |event_queue| == |event_times|
-            ensures (this.event_queue == old(this.event_queue) + [e])
-            {
-                this.event_queue := this.event_queue + [e];
-                var nat_time := if (|event_times| == 0) then 1 else (event_times[|event_times| -1].natTime + 1);
-                var time  := if (|event_times| == 0) then 1 else ((event_times[|event_times| -1].time + 1) % T);
-                var event_time := EventTime(time, nat_time);
-                this.event_times := this.event_times + [event_time];
-            }
-        // Queue an event to send out into the network.
-        // this might be a noop?
-        method Send(e : Event) 
-            modifies this`out_queue
-            ensures out_queue == old(out_queue) + [e]
-            {
-                out_queue := out_queue + [e];
-            }
-
-
-        // function seq_contains(es : seq<Event>, f : Event -> bool) : bool
-        //     {exists e :: f(e) && (e in es)}  
-        // NOT NEEDED
-        ghost predicate valid_generate(oldq : seq<Event>, newq : seq<Event>)
+        function next_generate_time(cur_natTime : nat, q : seq<LocEvent>) : nat
         {
-            ((|oldq| - 1)<= |newq| <= |oldq|)
-            && 
-            ( 
-                // if the oldq had more than 1 element in it, 
-                // the tail is the start of newq
-                |oldq| > 0 ==> 
-                    (oldq[1..] == newq[0..(|oldq|-1)])
-            )
-            // (|newq| >= |oldq|) && (newq[0..|oldq|] == oldq)
+            match (|q|) {
+                case 0 => cur_natTime
+                case _ => q[(|q|-1)].natTime
+            }
         }
+        lemma generate_time_is_valid(cur_ev : LocEvent, q : seq<LocEvent>)
+            requires valid_event_time(this.gstate, cur_ev)
+            requires valid_event_times(this.gstate, q)
+            ensures 
+                (|q| == 0 ==> valid_event_time(this.gstate, cur_ev))
+                &&
+                (|q| > 0 ==> valid_event_time(this.gstate, q[|q|-1]))
 
-        // private helpers
-        method dequeue<T>(es : seq<T>) returns (e : T, es2 : seq<T>)
-            requires (|es| > 0)
-            ensures (es == [e] + es2)
-            {e := es[0]; es2 := es[1..];}
+        var gen__out_natTime : nat
+        // TODO: the verification in generate is complicated and somewhat disorganized. 
+        // How much is necessary?
+        method Generate(cur_ev : LocEvent, e : Event, out_natTime : nat)
+            requires correct_internal_time(cur_ev)
+            // requires valid_timestamps([cur_ev] + queue)
+            requires valid_timestamps([cur_ev] + queue)
+            requires ordered_timestamps([cur_ev] + queue)
+            requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
+                requires valid_event_time(this.gstate, LocEvent(e, out_natTime % T, out_natTime))
+            requires valid_next_events([cur_ev] + queue)
+
+            // if the queue is empty, each constraint has to hold for 
+            // the current event and the generated event
+            requires |queue| > 0 ==> (
+                valid_next_event(queue[|queue|-1], LocEvent(e, out_natTime % T, out_natTime))
+                && queue[|queue|-1].natTime <= out_natTime
+            )
+            // if the queue is not empty, each constraint has to hold for 
+            // the last element of the queue and the generated event
+            requires |queue| == 0 ==> (
+                valid_next_event(cur_ev, LocEvent(e, out_natTime % T, out_natTime))
+                && cur_ev.natTime <= out_natTime
+            )
+            modifies this`queue
+            ensures this.queue == old(this.queue) + [LocEvent(e, out_natTime % T, out_natTime)]
+            ensures valid_timestamps([cur_ev] + queue)
+            ensures ordered_timestamps([cur_ev] + queue)
+            ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
+            ensures valid_next_events([cur_ev] + queue)
+
+        {
+            var out_ev   := LocEvent(e, out_natTime % T, out_natTime);
+            var new_queue   := queue + [out_ev];
+            valid_queue_append(queue, out_ev);
+            valid_timestamps_app(queue, out_ev);
+            valid_event_times_app(this.gstate, queue, out_ev);
+            assert valid_timestamps(new_queue);
+            queue := new_queue;
+        }
     }
+
+
+
 }
-
-
