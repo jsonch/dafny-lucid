@@ -1,5 +1,88 @@
 include "lucid_base.dfy"
 
+
+/*
+notes: 
+   This version of the program is built as an extension of the LucidBase 
+   module, which provides infrastructure for events, event queues, and handlers. 
+
+   The biggest change in the handler functions themselves, compared to v4, 
+   is that now the assertions reason about the presence of setFiltering events 
+   in the switch's pending event queue rather than just using a flag variable 
+   to indicate that a setFiltering is in flight. 
+
+   The handler functions themselves have not changed much from previous versions. 
+   The best place to start in reading this program is probably at the "Dispatch" 
+   method. That is where control transfers from the simulation loop in 
+   LucidBase to the event handlers in this program. Note that the 
+   constraints on Dispatch are defined in lucid_base.dfy, not here. However, 
+   the require and ensure clauses on Dispatch are the same as the require and 
+   ensure clauses on each of the handler functions. (See next comment.)
+
+   --- handler predicates ---  
+   All event handlers should require and ensure the same sets of predicates.
+   The predicates themselves are defined in LucidBase, but they 
+   depend on a few application-specific predicates that are _declared_ 
+   in LucidBase, but _defined_ in this program, as described below.
+   requires: 
+      requires correct_internal_time(cur_ev):
+         the "time" and "natTime" variables 
+         are equal to the time and natTime of the current event
+      requires valid_interarrivals([cur_ev] + queue): 
+         for all the events to be processed (including the current event):
+            1. timestamps are monotonically increasing
+            2. successive timestamps satisfy the inter-arrival constraint 
+               defined in the application-specific "valid_interarrival"
+      requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
+         all events to be processed have: 
+            1. time (as bits) == time (as nat) % T
+            2. satisfy the application-specific "valid_event_time"
+      requires pre_dispatch(this.state, gstate, cur_ev, this.queue, this.lastNatTime)
+         - this is the application-specific invariant that must 
+           hold at the beginning of every event.
+         - In this program, it has the parameter constraints, state invariant, 
+           recirculation invariant, and one or two other little predicates 
+           that may not be needed any more.
+
+   ensures:
+      ensures valid_interarrivals([cur_ev] + queue)
+         - same definition as in require
+      ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
+         - same definition as in require
+      ensures post_dispatch(state, gstate, queue, natTime)            
+         - this sets up the pre_dispatch for the next event. It is just: 
+          |queue| > 0 ==> 
+            pre_dispatch(state, gstate, queue[0], queue[1..], queue[0].natTime)
+
+Other notes: 
+  "ghost state"
+      In this version, I started splitting out some of the ghost state variables 
+      and putting them into their own "GhostState" type. Right now, 
+      GhostState only has natTimeOn. I could not get the verification to 
+      work out when natTimeOn was a ghost variable in state. I think the 
+      problem was related to the fact that the fields within state are 
+      mutable variables. I could not figure out how to convince 
+      the verifier that a change to "state" did _not_ change natTimeOn. 
+      So it was easier to just take natTimeOn out of state and put it 
+      into its own "ghost state" that has only immutable fields.
+      Since the fields are immutable, you change ghost state by 
+      making a new copy of it. e.g.: 
+         gstate := gstate.(natTimeOn := new_val);
+      Although I only needed to separate natTimeOn for this program, 
+      it seems like it might be a nice convention to keep the 
+      ghost state separate from concrete state. 
+
+  Generate clunkiness
+      The generate method is a bit more complicated to invoke than it 
+      should be. I will fix this with some local changes that should 
+      not affect your initial work.
+
+  Generating non-recirculating events
+      There's not yet a representation of 
+      "forwarding a packet/event out of the switch". For now, I just 
+      kept the "forwarded" return flag for processPacket as an indicator.
+*/
+
 module LucidProg refines LucidBase {
 
     datatype Event = 
@@ -91,11 +174,6 @@ module LucidProg refines LucidBase {
          ev.natTime < gs.natTimeOn + T
       }
 
-      lemma greater_time_on_preserves_valid_event_time(gs_old : GhostState, gs_new : GhostState, evs : seq<LocEvent>)
-         requires gs_new.natTimeOn >= gs_old.natTimeOn 
-         requires (forall i | 0 <= i < |evs| :: valid_event_time(gs_old, evs[i]))
-         ensures (forall i | 0 <= i < |evs| :: valid_event_time(gs_new, evs[i]))
-
       /*** the inter-event invariant ***/
       ghost predicate pre_dispatch(s : State, gs : GhostState, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
       {
@@ -142,6 +220,10 @@ module LucidProg refines LucidBase {
       function interval (time: bits): bits
       {  time / I  }                           // implemented as time >> i
 
+      lemma greater_time_on_preserves_valid_event_time(gs_old : GhostState, gs_new : GhostState, evs : seq<LocEvent>)
+         requires gs_new.natTimeOn >= gs_old.natTimeOn 
+         requires (forall i | 0 <= i < |evs| :: valid_event_time(gs_old, evs[i]))
+         ensures (forall i | 0 <= i < |evs| :: valid_event_time(gs_new, evs[i]))
 
       method Dispatch(cur_ev : LocEvent)
       {  
