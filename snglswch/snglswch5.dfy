@@ -1,4 +1,4 @@
-include "lucid_base_rec.dfy"
+include "lucid_base.dfy"
 
 module LucidProg refines LucidBase {
 
