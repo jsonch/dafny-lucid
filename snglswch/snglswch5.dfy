@@ -7,11 +7,6 @@ module LucidProg refines LucidBase {
       | HardwareFailure()
       | ProcessPacket(dnsRequest: bool, uniqueSig: nat)
       | SetFiltering(on : bool)
-      
-      // | SetFiltering(on : bool)
-      // | ProcessPacket(dnsRequest: bool, uniqueSig: nat)
-      // | PacketOut() // optional.
-
    
     datatype GhostState = 
        | GhostState(natTimeOn : nat)
@@ -27,7 +22,6 @@ module LucidProg refines LucidBase {
 
       // ghost variables for reasoning about timeOn
       ghost var actualTimeOn : nat 
-      // ghost var natTimeOn : nat
       const T : nat := 256
 
       
@@ -86,7 +80,7 @@ module LucidProg refines LucidBase {
 
 
 
-      ghost predicate valid_next_event(cur : LocEvent, next : LocEvent)
+      ghost predicate valid_interarrival(cur : LocEvent, next : LocEvent)
       {
          (next.natTime - cur.natTime < T - I)
       }
@@ -161,22 +155,18 @@ module LucidProg refines LucidBase {
             case cur_ev.e.SimulatedClockTick? => {simulatedClockTick(cur_ev);}            
             case cur_ev.e.HardwareFailure? => {hardwareFailure(cur_ev);}
       }
-
+      
       method simulatedClockTick(cur_ev : LocEvent)
          requires cur_ev.e.SimulatedClockTick?
          requires correct_internal_time(cur_ev)
-         requires valid_timestamps([cur_ev] + queue)
-         requires ordered_timestamps([cur_ev] + queue)
+         requires valid_interarrivals([cur_ev] + queue)
          requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
-         requires valid_next_events([cur_ev] + this.queue)
          requires pre_dispatch(this.state, gstate, cur_ev, this.queue, this.lastNatTime)
 
          // requires (natTime + 1) < gstate.natTimeOn + T
 
-         ensures valid_timestamps([cur_ev] + queue)
-         ensures ordered_timestamps([cur_ev] + queue)
+         ensures valid_interarrivals([cur_ev] + queue)
          ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
-         ensures valid_next_events([cur_ev] + this.queue)         
          ensures post_dispatch(state, gstate, queue, natTime)
       {
          // NOTE: we don't want to propagate the (natTime + 1) < gstate.natTimeOn + T
@@ -191,27 +181,26 @@ module LucidProg refines LucidBase {
             // show time-sensitive invariant holds after clock tick
             assert state.filtering ==>
                   (protecting (state, gstate, natTimePlus) <==> protectImplmnt (state, timePlus));   
+            var foo := 1; // for some reason my vscode doesn't like an if with only ghost ops in it
          }
          recirc_invariant_tail(state, [cur_ev] + queue);
       }
+
+
       method hardwareFailure (cur_ev : LocEvent)           // ghost
          modifies this.state, this`gstate, this`queue
          requires correct_internal_time(cur_ev)
-         requires valid_timestamps([cur_ev] + queue)
-         requires ordered_timestamps([cur_ev] + queue)
+         requires valid_interarrivals([cur_ev] + queue)
          requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
-         requires valid_next_events([cur_ev] + this.queue)
          requires pre_dispatch(this.state, gstate, cur_ev, this.queue, this.lastNatTime)
 
          // requires (natTime + 1) < gstate.natTimeOn + T
 
-         ensures valid_timestamps([cur_ev] + queue)
-         ensures ordered_timestamps([cur_ev] + queue)
+         ensures valid_interarrivals([cur_ev] + queue)
          ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
-         ensures valid_next_events([cur_ev] + this.queue)         
          ensures post_dispatch(state, gstate, queue, natTime)
       { 
-         recirc_invariant_tail(state, [cur_ev] + queue);
+         // recirc_invariant_tail(state, [cur_ev] + queue);
          state.filtering, state.recircPending := false, false;
          // NOTE: we assume that the hardware failure "event" carries 
          //       the timestamp at which the hardware "starts back up"
@@ -229,16 +218,12 @@ module LucidProg refines LucidBase {
          modifies this.state, this`gstate
 
          requires correct_internal_time(cur_ev)
-         requires valid_timestamps([cur_ev] + queue)
-         requires ordered_timestamps([cur_ev] + queue)
+         requires valid_interarrivals([cur_ev] + queue)
          requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
-         requires valid_next_events([cur_ev] + this.queue)
          requires pre_dispatch(this.state, gstate, cur_ev, this.queue, this.lastNatTime)
 
-         ensures valid_timestamps([cur_ev] + queue)
-         ensures ordered_timestamps([cur_ev] + queue)
+         ensures valid_interarrivals([cur_ev] + queue)
          ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
-         ensures valid_next_events([cur_ev] + this.queue) // NOTE: this is the hard one!         
          ensures post_dispatch(state, gstate, queue, natTime)
       {
          // goal: prove that no other events in the queue can be setFiltering events. 
@@ -284,20 +269,16 @@ module LucidProg refines LucidBase {
          requires cur_ev.e.ProcessPacket? 
          // same requirements as dispatch
          requires correct_internal_time(cur_ev)
-         requires valid_timestamps([cur_ev] + queue)
-         requires ordered_timestamps([cur_ev] + queue)
+         requires valid_interarrivals([cur_ev] + queue)
          requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
-         requires valid_next_events([cur_ev] + this.queue)
          requires pre_dispatch(this.state, gstate, cur_ev, this.queue, this.lastNatTime)
 
          /* pasting in requirements from old version -- TODO: what's necessary? */
          requires natTime >= lastNatTime
          requires natTime - lastNatTime < T - I
 
-         ensures valid_timestamps([cur_ev] + queue)
-         ensures ordered_timestamps([cur_ev] + queue)
+         ensures valid_interarrivals([cur_ev] + queue)
          ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
-         ensures valid_next_events([cur_ev] + this.queue) // NOTE: this is the hard one!         
          ensures post_dispatch(state, gstate, queue, natTime)
 
 
@@ -322,10 +303,8 @@ module LucidProg refines LucidBase {
          requires cur_ev.e.ProcessPacket? 
          // same requirements as dispatch
          requires correct_internal_time(cur_ev)
-         requires valid_timestamps([cur_ev] + queue)
-         requires ordered_timestamps([cur_ev] + queue)
+         requires valid_interarrivals([cur_ev] + queue)
          requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
-         requires valid_next_events([cur_ev] + this.queue)
          requires pre_dispatch(this.state, this.gstate, cur_ev, this.queue, this.lastNatTime)
          /* pasting in requirements from old version -- TODO: what's necessary? */
          requires cur_ev.e.dnsRequest
@@ -333,10 +312,8 @@ module LucidProg refines LucidBase {
          requires natTime - lastNatTime < T - I
          
          ensures forwarded
-         ensures valid_timestamps([cur_ev] + queue)
-         ensures ordered_timestamps([cur_ev] + queue)
+         ensures valid_interarrivals([cur_ev] + queue)
          ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
-         ensures valid_next_events([cur_ev] + this.queue) // NOTE: this is the hard one!         
          ensures post_dispatch(state, gstate, queue, natTime)
       {
          recirc_invariant_tail(state, [cur_ev]+queue);
@@ -347,16 +324,13 @@ module LucidProg refines LucidBase {
          forwarded := true;
       }
 
-
       method processReply (cur_ev : LocEvent) returns (forwarded: bool)
          modifies this.state, this`queue, this`gstate
          requires cur_ev.e.ProcessPacket? 
          // same requirements as dispatch
          requires correct_internal_time(cur_ev)
-         requires valid_timestamps([cur_ev] + queue)
-         requires ordered_timestamps([cur_ev] + queue)
+         requires valid_interarrivals([cur_ev] + queue)
          requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
-         requires valid_next_events([cur_ev] + this.queue)
          requires pre_dispatch(this.state, gstate, cur_ev, this.queue, this.lastNatTime)
          /* pasting in requirements from old version -- TODO: what's necessary? */
          requires !cur_ev.e.dnsRequest
@@ -366,10 +340,8 @@ module LucidProg refines LucidBase {
          requires state.preFilterSet == state.requestSet
       
 
-         ensures valid_timestamps([cur_ev] + queue)
-         ensures ordered_timestamps([cur_ev] + queue)
+         ensures valid_interarrivals([cur_ev] + queue)
          ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
-         ensures valid_next_events([cur_ev] + this.queue) // NOTE: this is the hard one!         
          ensures post_dispatch(state, gstate, queue, natTime)
          ensures (  ! cur_ev.e.dnsRequest && protecting (state, gstate, natTime)
                && (! (cur_ev.e.uniqueSig in state.preFilterSet))      )
@@ -559,7 +531,6 @@ module LucidProg refines LucidBase {
       // sliding-window Bloom filter, there are no timely deletions, just
       // scheduled timeouts which can be delayed.
          ensures ! (uniqueSig in state.requestSet) ==> (! inSet)
-
 
 
    /****  recirculation invariant and friends ****/

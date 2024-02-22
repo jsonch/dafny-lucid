@@ -31,18 +31,21 @@ abstract module LucidBase {
         var lastNatTime : nat
 
         /***   user-defined predicates   ***/
-        // the event "next" is a valid event to come after "cur"
-        ghost predicate valid_next_event(cur : LocEvent, next : LocEvent)
-        ghost predicate valid_next_events(ev_queue : seq<LocEvent>)
+
+        // lets the application bound the interarrival between events
+        ghost predicate valid_interarrival(cur : LocEvent, next : LocEvent)
+
+        ghost function valid_interarrivals(ev_queue : seq<LocEvent>) : bool
         {
             match |ev_queue| {
                 case 0 => true
                 case 1 => true
                 case _ => 
-                   valid_next_event(ev_queue[0], ev_queue[1])
-                    && valid_next_events(ev_queue[1..])
+                    ev_queue[0].natTime <= ev_queue[1].natTime
+                    && valid_interarrival(ev_queue[0], ev_queue[1])
+                    && valid_interarrivals(ev_queue[1..])
             }            
-        }
+        }        
         
         // the time of event "ev" is valid with respect to some program state "s"
         ghost function valid_event_time(gs : GhostState, ev : LocEvent) : bool
@@ -50,8 +53,11 @@ abstract module LucidBase {
         {
             match |ev_queue| {
                 case 0 => true
-                case 1 => valid_event_time(gs, ev_queue[0])
-                case _ => valid_event_time(gs, ev_queue[0]) && valid_event_times(gs, ev_queue[1..])                
+                case 1 => valid_event_time(gs, ev_queue[0]) && ev_queue[0].time == (ev_queue[0].natTime % T)
+                case _ => 
+                        valid_event_time(gs, ev_queue[0]) 
+                    &&  ev_queue[0].time == (ev_queue[0].natTime % T)
+                    &&  valid_event_times(gs, ev_queue[1..])                
             }
         }
         lemma valid_event_times_implies_forall(gs : GhostState, ev_queue : seq<LocEvent>)
@@ -60,8 +66,6 @@ abstract module LucidBase {
         lemma forall_implies_valid_event_times(gs : GhostState, ev_queue : seq<LocEvent>)
             requires (forall i | 0 <= i < |ev_queue| :: valid_event_time(gs, ev_queue[i]))
             ensures valid_event_times(gs, ev_queue)
-
-
 
         lemma valid_event_times_app(gs : GhostState, ev_queue : seq<LocEvent>, ev : LocEvent) 
             requires valid_event_times(gs, ev_queue)
@@ -82,37 +86,6 @@ abstract module LucidBase {
                         pre_dispatch(updated_s, updated_gs, updated_queue[0], updated_queue[1..], updated_lastNatTime)            
         }
         
-
-
-
-
-        // natural and bit representations of timestamps match
-        ghost function valid_timestamps(ev_queue : seq<LocEvent>) : bool
-        {
-            match |ev_queue| {
-                case 0 => true
-                case 1 => ev_queue[0].time == (ev_queue[0].natTime % T)
-                case _ => 
-                    ev_queue[0].time == (ev_queue[0].natTime % T)
-                    && valid_timestamps(ev_queue[1..])
-            }
-        }
-        lemma valid_timestamps_app(ev_queue : seq<LocEvent>, ev : LocEvent) 
-            requires valid_timestamps(ev_queue)
-            requires ev.time == (ev.natTime % T)
-            ensures valid_timestamps(ev_queue + [ev])
-
-        ghost function ordered_timestamps(ev_queue : seq<LocEvent>) : bool
-        {
-            match |ev_queue| {
-                case 0 => true
-                case 1 => true
-                case _ => 
-                    ev_queue[0].natTime <= ev_queue[1].natTime
-                    && ordered_timestamps(ev_queue[1..])
-            }            
-        }
-
         predicate correct_internal_time(cur_ev : LocEvent)
             reads this`natTime, this`time, this`lastNatTime
         {
@@ -125,32 +98,30 @@ abstract module LucidBase {
         // if the queue has at least 2 events, 
         // the second event is a valid event to come after the first
         lemma valid_event_queue_implies_valid_head(ev_queue : seq<LocEvent>)
-            requires valid_next_events(ev_queue)
+            requires valid_interarrivals(ev_queue)
             ensures (match |ev_queue| {
                 case 0 => true
                 case 1 => true
-                case _ => valid_next_event(ev_queue[0], ev_queue[1])})
+                case _ => valid_interarrival(ev_queue[0], ev_queue[1])})
         lemma valid_event_queue_implies_valid_tail(ev_queue : seq<LocEvent>)
-            requires valid_next_events(ev_queue)
+            requires valid_interarrivals(ev_queue)
             requires |ev_queue| > 0
-            ensures valid_next_events(ev_queue[1..])
+            ensures valid_interarrivals(ev_queue[1..])
         lemma valid_queue_append(ev_queue : seq<LocEvent>, ev : LocEvent)
-            requires valid_next_events(ev_queue)
-            requires ordered_timestamps(ev_queue)
+            requires valid_interarrivals(ev_queue)
 
             requires |ev_queue| > 0 ==> 
                 (
-                    valid_next_event(ev_queue[|ev_queue|-1], ev)
+                    valid_interarrival(ev_queue[|ev_queue|-1], ev)
                     &&
                     ev_queue[|ev_queue|-1].natTime <= ev.natTime
                 )
-            ensures valid_next_events(ev_queue + [ev])            
-            ensures ordered_timestamps(ev_queue + [ev])
+            ensures valid_interarrivals(ev_queue + [ev])
 
         lemma valid_queue_prepend(ev : LocEvent, ev_queue : seq<LocEvent>)
-            requires valid_next_events(ev_queue)
-            requires |ev_queue| > 0 ==> valid_next_event(ev, ev_queue[0])
-            ensures valid_next_events([ev] + ev_queue)            
+            requires valid_interarrivals(ev_queue)
+            requires |ev_queue| > 0 ==> valid_interarrival(ev, ev_queue[0])
+            ensures valid_interarrivals([ev] + ev_queue)            
 
 
         // lemma valid_event_queue_implies_valid_time(ev_queue : seq<LocEvent>)
@@ -161,11 +132,9 @@ abstract module LucidBase {
 
         method ProcessEvent(i : nat, eq : seq<LocEvent>) returns (j : nat)
             requires |eq| > 0
-            requires valid_next_events(eq)
+            requires valid_interarrivals(eq)
             requires valid_event_times(this.gstate, eq)
             requires pre_dispatch(this.state, this.gstate, eq[0], eq[1..], lastNatTime)
-            requires valid_timestamps(eq)
-            requires ordered_timestamps(eq)
             requires lastNatTime <= eq[0].natTime
             requires this.natTime == eq[0].natTime
             requires this.time == eq[0].time
@@ -215,15 +184,11 @@ abstract module LucidBase {
             modifies this.state, this`queue, this`gstate
             requires correct_internal_time(cur_ev)
 
-            requires valid_timestamps([cur_ev] + queue)
-            requires ordered_timestamps([cur_ev] + queue)
+            requires valid_interarrivals([cur_ev] + queue)
             requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
-            requires valid_next_events([cur_ev] + this.queue)
             requires pre_dispatch(this.state, this.gstate, cur_ev, this.queue, this.lastNatTime)
 
-            ensures valid_timestamps([cur_ev] + queue)
-            ensures ordered_timestamps([cur_ev] + queue)
-            ensures valid_next_events([cur_ev] + this.queue)
+            ensures valid_interarrivals([cur_ev] + queue)
             ensures valid_event_times(this.gstate, [cur_ev] + this.queue)
 
             ensures post_dispatch(state, gstate, queue, natTime)
@@ -255,39 +220,32 @@ abstract module LucidBase {
         // How much is necessary?
         method Generate(cur_ev : LocEvent, e : Event, out_natTime : nat)
             requires correct_internal_time(cur_ev)
-            // requires valid_timestamps([cur_ev] + queue)
-            requires valid_timestamps([cur_ev] + queue)
-            requires ordered_timestamps([cur_ev] + queue)
+            requires valid_interarrivals([cur_ev] + queue)
             requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
                 requires valid_event_time(this.gstate, LocEvent(e, out_natTime % T, out_natTime))
-            requires valid_next_events([cur_ev] + queue)
 
             // if the queue is empty, each constraint has to hold for 
             // the current event and the generated event
             requires |queue| > 0 ==> (
-                valid_next_event(queue[|queue|-1], LocEvent(e, out_natTime % T, out_natTime))
+                valid_interarrival(queue[|queue|-1], LocEvent(e, out_natTime % T, out_natTime))
                 && queue[|queue|-1].natTime <= out_natTime
             )
             // if the queue is not empty, each constraint has to hold for 
             // the last element of the queue and the generated event
             requires |queue| == 0 ==> (
-                valid_next_event(cur_ev, LocEvent(e, out_natTime % T, out_natTime))
+                valid_interarrival(cur_ev, LocEvent(e, out_natTime % T, out_natTime))
                 && cur_ev.natTime <= out_natTime
             )
             modifies this`queue
             ensures this.queue == old(this.queue) + [LocEvent(e, out_natTime % T, out_natTime)]
-            ensures valid_timestamps([cur_ev] + queue)
-            ensures ordered_timestamps([cur_ev] + queue)
             ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
-            ensures valid_next_events([cur_ev] + queue)
+            ensures valid_interarrivals([cur_ev] + queue)
 
         {
             var out_ev   := LocEvent(e, out_natTime % T, out_natTime);
             var new_queue   := queue + [out_ev];
             valid_queue_append(queue, out_ev);
-            valid_timestamps_app(queue, out_ev);
             valid_event_times_app(this.gstate, queue, out_ev);
-            assert valid_timestamps(new_queue);
             queue := new_queue;
         }
     }
