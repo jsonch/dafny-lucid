@@ -1,87 +1,18 @@
 include "lucid_base.dfy"
 
-
 /*
-notes: 
-   This version of the program is built as an extension of the LucidBase 
-   module, which provides infrastructure for events, event queues, and handlers. 
+Hard todo: 
 
-   The biggest change in the handler functions themselves, compared to v4, 
-   is that now the assertions reason about the presence of setFiltering events 
-   in the switch's pending event queue rather than just using a flag variable 
-   to indicate that a setFiltering is in flight. 
+   - write down the exact reason why we can't put 
+     natTimeOn back into ghostState
+      - Its something subtle, but real. Every time 
+        I try, I fail.
+   
 
-   The handler functions themselves have not changed much from previous versions. 
-   The best place to start in reading this program is probably at the "Dispatch" 
-   method. That is where control transfers from the simulation loop in 
-   LucidBase to the event handlers in this program. Note that the 
-   constraints on Dispatch are defined in lucid_base.dfy, not here. However, 
-   the require and ensure clauses on Dispatch are the same as the require and 
-   ensure clauses on each of the handler functions. (See next comment.)
 
-   --- handler predicates ---  
-   All event handlers should require and ensure the same sets of predicates.
-   The predicates themselves are defined in LucidBase, but they 
-   depend on a few application-specific predicates that are _declared_ 
-   in LucidBase, but _defined_ in this program, as described below.
-   requires: 
-      requires correct_internal_time(cur_ev):
-         the "time" and "natTime" variables 
-         are equal to the time and natTime of the current event
-      requires valid_interarrivals([cur_ev] + queue): 
-         for all the events to be processed (including the current event):
-            1. timestamps are monotonically increasing
-            2. successive timestamps satisfy the inter-arrival constraint 
-               defined in the application-specific "valid_interarrival"
-      requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
-         all events to be processed have: 
-            1. time (as bits) == time (as nat) % T
-            2. satisfy the application-specific "valid_event_time"
-      requires pre_dispatch(this.state, gstate, cur_ev, this.queue, this.lastNatTime)
-         - this is the application-specific invariant that must 
-           hold at the beginning of every event.
-         - In this program, it has the parameter constraints, state invariant, 
-           recirculation invariant, and one or two other little predicates 
-           that may not be needed any more.
 
-   ensures:
-      ensures valid_interarrivals([cur_ev] + queue)
-         - same definition as in require
-      ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
-         - same definition as in require
-      ensures post_dispatch(state, gstate, queue, natTime)            
-         - this sets up the pre_dispatch for the next event. It is just: 
-          |queue| > 0 ==> 
-            pre_dispatch(state, gstate, queue[0], queue[1..], queue[0].natTime)
-
-Other notes: 
-  "ghost state"
-      In this version, I started splitting out some of the ghost state variables 
-      and putting them into their own "GhostState" type. Right now, 
-      GhostState only has natTimeOn. I could not get the verification to 
-      work out when natTimeOn was a ghost variable in state. I think the 
-      problem was related to the fact that the fields within state are 
-      mutable variables. I could not figure out how to convince 
-      the verifier that a change to "state" did _not_ change natTimeOn. 
-      So it was easier to just take natTimeOn out of state and put it 
-      into its own "ghost state" that has only immutable fields.
-      Since the fields are immutable, you change ghost state by 
-      making a new copy of it. e.g.: 
-         gstate := gstate.(natTimeOn := new_val);
-      Although I only needed to separate natTimeOn for this program, 
-      it seems like it might be a nice convention to keep the 
-      ghost state separate from concrete state. 
-
-  Generate clunkiness
-      The generate method is a bit more complicated to invoke than it 
-      should be. I will fix this with some local changes that should 
-      not affect your initial work.
-
-  Generating non-recirculating events
-      There's not yet a representation of 
-      "forwarding a packet/event out of the switch". For now, I just 
-      kept the "forwarded" return flag for processPacket as an indicator.
 */
+
 
 module LucidProg refines LucidBase {
 
@@ -106,6 +37,8 @@ module LucidProg refines LucidBase {
       // ghost variables for reasoning about timeOn
       ghost var actualTimeOn : nat 
       const T : nat := 256
+
+      ghost var natTimeOn : nat 
 
       
 
@@ -171,31 +104,32 @@ module LucidProg refines LucidBase {
 
       ghost function valid_event_time(gs : GhostState, ev : LocEvent) : bool 
       {
-         ev.natTime < gs.natTimeOn + T
+         ev.natTime >= gs.natTimeOn
+         &&
+         ev.natTime <  gs.natTimeOn + T
       }
 
-      /*** the inter-event invariant ***/
       ghost predicate pre_dispatch(s : State, gs : GhostState, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
       {
       
-         var natTime := cur_ev.natTime;
          parameterConstraints()
-         && (natTime - lastNatTime < T - I)
+         && consistentGhostState(s, gs)
          && stateInvariant(s, gs, cur_ev.time, cur_ev.natTime)
-         // && (natTime < s.actualTimeOn + T) // now enforced by valid_event_time
          && recircInvariant(s, [cur_ev] + ev_queue)
-         // && (  state.recircPending ==> (state.filtering == ! state.recircSwitch)  )
+      }
+
+      // state and ghost state are consistent with each other
+      ghost predicate consistentGhostState(state : State, gstate : GhostState) 
+         reads state
+      {
+         state.timeOn == gstate.natTimeOn % T
+         && gstate.natTimeOn >= state.actualTimeOn
       }
 
       ghost predicate stateInvariant (state : State, gstate : GhostState, time : bits, natTime : nat)         // ghost
          reads state
       {
-         // CHANGE: lastNatTime --> natTime because it doesn't make sense in 
-         //         SetFiltering (it sets natTimeOn to the current time, not the last time)
-              (  gstate.natTimeOn <= natTime  ) 
-         && (  state.timeOn == gstate.natTimeOn % T  )
-         && (  gstate.natTimeOn >= state.actualTimeOn  )
-         && (  state.filtering ==> 
+         (  state.filtering ==> 
                   (protecting (state, gstate, natTime) <==> protectImplmnt (state, time))  )
          && (  ! state.filtering ==> state.requestSet == {}  )
       }
@@ -240,7 +174,9 @@ module LucidProg refines LucidBase {
       
       method simulatedClockTick(cur_ev : LocEvent)
          requires cur_ev.e.SimulatedClockTick?
-         requires correct_internal_time(cur_ev)
+         requires consistent_internal_time()
+         requires consistent_cur_event_time(cur_ev)
+
          requires valid_interarrivals([cur_ev] + queue)
          requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
          requires pre_dispatch(this.state, gstate, cur_ev, this.queue, this.lastNatTime)
@@ -248,7 +184,7 @@ module LucidProg refines LucidBase {
          // requires (natTime + 1) < gstate.natTimeOn + T
 
          ensures valid_interarrivals([cur_ev] + queue)
-         ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
+         ensures valid_event_times(this.gstate, [cur_ev] + this.queue)   
          ensures post_dispatch(state, gstate, queue, natTime)
       {
          // NOTE: we don't want to propagate the (natTime + 1) < gstate.natTimeOn + T
@@ -261,8 +197,12 @@ module LucidProg refines LucidBase {
             assert state.filtering ==>                                 // invariant
                (natTime >=gstate.natTimeOn + Q as nat <==> (time -state.timeOn) % T >= Q);
             // show time-sensitive invariant holds after clock tick
-            assert state.filtering ==>
-                  (protecting (state, gstate, natTimePlus) <==> protectImplmnt (state, timePlus));   
+            // assert (  state.filtering ==> 
+            //       (protecting (state, gstate, natTimePlus) <==> protectImplmnt (state, timePlus))  );
+
+            // assert stateInvariant(state, gstate, timePlus, natTimePlus);
+            // assert state.filtering ==>
+            //       (protecting (state, gstate, natTimePlus) <==> protectImplmnt (state, timePlus));   
             var foo := 1; // for some reason my vscode doesn't like an if with only ghost ops in it
          }
          recirc_invariant_tail(state, [cur_ev] + queue);
@@ -271,7 +211,8 @@ module LucidProg refines LucidBase {
 
       method hardwareFailure (cur_ev : LocEvent)           // ghost
          modifies this.state, this`gstate, this`queue
-         requires correct_internal_time(cur_ev)
+         requires consistent_internal_time()
+         requires consistent_cur_event_time(cur_ev)
          requires valid_interarrivals([cur_ev] + queue)
          requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
          requires pre_dispatch(this.state, gstate, cur_ev, this.queue, this.lastNatTime)
@@ -299,7 +240,8 @@ module LucidProg refines LucidBase {
          requires cur_ev.e.SetFiltering?
          modifies this.state, this`gstate
 
-         requires correct_internal_time(cur_ev)
+         requires consistent_internal_time()
+         requires consistent_cur_event_time(cur_ev)
          requires valid_interarrivals([cur_ev] + queue)
          requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
          requires pre_dispatch(this.state, gstate, cur_ev, this.queue, this.lastNatTime)
@@ -350,14 +292,11 @@ module LucidProg refines LucidBase {
          modifies this.state, this`queue, this`gstate
          requires cur_ev.e.ProcessPacket? 
          // same requirements as dispatch
-         requires correct_internal_time(cur_ev)
+         requires consistent_internal_time()
+         requires consistent_cur_event_time(cur_ev)
          requires valid_interarrivals([cur_ev] + queue)
          requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
          requires pre_dispatch(this.state, gstate, cur_ev, this.queue, this.lastNatTime)
-
-         /* pasting in requirements from old version -- TODO: what's necessary? */
-         requires natTime >= lastNatTime
-         requires natTime - lastNatTime < T - I
 
          ensures valid_interarrivals([cur_ev] + queue)
          ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
@@ -384,16 +323,15 @@ module LucidProg refines LucidBase {
          modifies this.state, this`queue
          requires cur_ev.e.ProcessPacket? 
          // same requirements as dispatch
-         requires correct_internal_time(cur_ev)
+         requires consistent_internal_time()
+         requires consistent_cur_event_time(cur_ev)
          requires valid_interarrivals([cur_ev] + queue)
          requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
          requires pre_dispatch(this.state, this.gstate, cur_ev, this.queue, this.lastNatTime)
-         /* pasting in requirements from old version -- TODO: what's necessary? */
-         requires cur_ev.e.dnsRequest
-         requires natTime >= lastNatTime
-         requires natTime - lastNatTime < T - I
-         
+
+         requires cur_ev.e.dnsRequest         
          ensures forwarded
+
          ensures valid_interarrivals([cur_ev] + queue)
          ensures valid_event_times(this.gstate, [cur_ev] + this.queue)    
          ensures post_dispatch(state, gstate, queue, natTime)
@@ -410,14 +348,13 @@ module LucidProg refines LucidBase {
          modifies this.state, this`queue, this`gstate
          requires cur_ev.e.ProcessPacket? 
          // same requirements as dispatch
-         requires correct_internal_time(cur_ev)
+         requires consistent_internal_time()
+         requires consistent_cur_event_time(cur_ev)
          requires valid_interarrivals([cur_ev] + queue)
          requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
          requires pre_dispatch(this.state, gstate, cur_ev, this.queue, this.lastNatTime)
          /* pasting in requirements from old version -- TODO: what's necessary? */
          requires !cur_ev.e.dnsRequest
-         requires natTime >= lastNatTime
-         requires natTime - lastNatTime < T - I
          requires natTime < gstate.natTimeOn + T   
          requires state.preFilterSet == state.requestSet
       
@@ -710,6 +647,47 @@ module LucidProg refines LucidBase {
     lemma LemmaCountSumGtFilterSeq<T>(a : seq<T>, b : seq<T>, f : (T -> bool))
     ensures count_f(a + b, f) > count_f(a, f)
     ensures count_f(a + b, f) > count_f(b, f)
+
+
+
+   /*************************** Arrival methods ***************************/
+
+
+   method MakeValidEvent() returns (e:LocEvent)         
+      // create an event that can be given to ProcessEvent as 
+      // a valid input at the current system time given the 
+      // current application state. 
+
+      requires parameterConstraints()
+
+      requires consistent_internal_time()
+
+      // These are consistency constraints between state and ghost 
+      // state. Application specific.
+      // requires consistentGhostState(this.state, this.gstate)
+      requires this.state.timeOn == this.gstate.natTimeOn % T
+      requires this.gstate.natTimeOn >= this.state.actualTimeOn
+
+      // State constraints. Application specific.
+      requires this.state.recircPending == false
+      requires !this.state.filtering ==> state.requestSet == {}
+
+      // State-Time constraints. Application specific.
+      requires this.lastNatTime >= this.gstate.natTimeOn
+      requires this.natTime < this.gstate.natTimeOn + T
+
+      ensures valid_arrival(e, this.gstate)
+      {
+         var natTime : nat := this.natTime;
+         var time : bits := this.time;
+         e :=LocEvent(SimulatedClockTick(), this.time, this.natTime);
+         assert state.recircPending == false;
+         assert count_f([], is_setfiltering) == 0;
+         // assert count_f
+         assert valid_event_time(this.gstate, e);
+         assert pre_dispatch(this.state, this.gstate, e, [], this.lastNatTime);
+         assert valid_arrival(e, this.gstate);
+      }
 
 
 

@@ -20,7 +20,7 @@ abstract module LucidBase {
 
         // state and event queue are mutable for user-facing abstractions
         var state : State
-        ghost var gstate : GhostState
+        ghost var gstate : GhostState        
         var queue : seq<LocEvent> // event * timestamp
 
         var time    : bits // We need time as a class variable because we want an 
@@ -32,9 +32,16 @@ abstract module LucidBase {
 
         /***   user-defined predicates   ***/
 
-        // lets the application bound the interarrival between events
+        // the time between current and next event is valid
         ghost predicate valid_interarrival(cur : LocEvent, next : LocEvent)
+        // the time of event "ev" is valid with respect to some program state "s"
+        ghost function valid_event_time(gs : GhostState, ev : LocEvent) : bool
+        // pre_dispatch is what must hold at the beginning of every event handler's execution
+        ghost predicate pre_dispatch(s : State, gs : GhostState, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
+            reads s
 
+        /***  system predicates, that apply user-defined predicates across the queue of 
+              pending events. ***/
         ghost function valid_interarrivals(ev_queue : seq<LocEvent>) : bool
         {
             match |ev_queue| {
@@ -47,8 +54,6 @@ abstract module LucidBase {
             }            
         }        
         
-        // the time of event "ev" is valid with respect to some program state "s"
-        ghost function valid_event_time(gs : GhostState, ev : LocEvent) : bool
         ghost function valid_event_times(gs : GhostState, ev_queue : seq<LocEvent>) : bool
         {
             match |ev_queue| {
@@ -60,6 +65,37 @@ abstract module LucidBase {
                     &&  valid_event_times(gs, ev_queue[1..])                
             }
         }
+        /*** other system predicates ***/
+
+        // post_dispatch says that if the updated queue is not empty, 
+        // pre_dispatch holds for the next event on the updated state.
+        // every event handler must make sure that post_dispatch holds 
+        // at the end of its execution. 
+        ghost predicate post_dispatch(updated_s : State, updated_gs : GhostState, updated_queue : seq<LocEvent>, updated_lastNatTime : nat)
+            reads updated_s
+        {
+                |updated_queue| > 0 ==> 
+                        pre_dispatch(updated_s, updated_gs, updated_queue[0], updated_queue[1..], updated_lastNatTime)            
+        }
+        
+        // consistent_internal_time ensures that the system's internal clock is consistent with itself.
+        predicate consistent_internal_time() 
+            reads this`natTime, this`time, this`lastNatTime
+        {
+            this.time    == this.natTime % T  
+            && this.natTime >= this.lastNatTime          
+        }
+
+        predicate consistent_cur_event_time(cur_ev : LocEvent)
+            reads this`natTime, this`time, this`lastNatTime
+        {
+            this.natTime == cur_ev.natTime
+            && this.time    == cur_ev.time
+
+        }
+
+
+
         lemma valid_event_times_implies_forall(gs : GhostState, ev_queue : seq<LocEvent>)
             requires valid_event_times(gs, ev_queue)
             ensures (forall i | 0 <= i < |ev_queue| :: valid_event_time(gs, ev_queue[i]))
@@ -72,28 +108,7 @@ abstract module LucidBase {
             requires valid_event_time(gs, ev)
             ensures valid_event_times(gs, ev_queue + [ev])
 
-        // pre_dispatch is guaranteed to hold at the beginning of every event handler's execution
-        ghost predicate pre_dispatch(s : State, gs : GhostState, cur_ev : LocEvent, ev_queue : seq<LocEvent>, lastNatTime : nat)
-            reads s
 
-        // post_dispatch must hold at the end of every event handler's execution
-        // it just says that if the updated queue is not empty, 
-        // pre_dispatch holds for the next event on the updated state
-        ghost predicate post_dispatch(updated_s : State, updated_gs : GhostState, updated_queue : seq<LocEvent>, updated_lastNatTime : nat)
-            reads updated_s
-        {
-                |updated_queue| > 0 ==> 
-                        pre_dispatch(updated_s, updated_gs, updated_queue[0], updated_queue[1..], updated_lastNatTime)            
-        }
-        
-        predicate correct_internal_time(cur_ev : LocEvent)
-            reads this`natTime, this`time, this`lastNatTime
-        {
-            this.natTime == cur_ev.natTime
-            && this.time    == cur_ev.time
-            && this.time    == this.natTime % T  
-            && this.natTime >= this.lastNatTime          
-        }
 
         // if the queue has at least 2 events, 
         // the second event is a valid event to come after the first
@@ -103,10 +118,12 @@ abstract module LucidBase {
                 case 0 => true
                 case 1 => true
                 case _ => valid_interarrival(ev_queue[0], ev_queue[1])})
+
         lemma valid_event_queue_implies_valid_tail(ev_queue : seq<LocEvent>)
             requires valid_interarrivals(ev_queue)
             requires |ev_queue| > 0
             ensures valid_interarrivals(ev_queue[1..])
+
         lemma valid_queue_append(ev_queue : seq<LocEvent>, ev : LocEvent)
             requires valid_interarrivals(ev_queue)
 
@@ -124,11 +141,9 @@ abstract module LucidBase {
             ensures valid_interarrivals([ev] + ev_queue)            
 
 
-        // lemma valid_event_queue_implies_valid_time(ev_queue : seq<LocEvent>)
-        //     requires valid_event_queue(ev_queue)
-        //     ensures  |ev_queue| > 0 ==> ev_queue[0].time == ev_queue[0].natTime % T
-
         constructor ()
+            
+        
 
         method ProcessEvent(i : nat, eq : seq<LocEvent>) returns (j : nat)
             requires |eq| > 0
@@ -182,7 +197,8 @@ abstract module LucidBase {
 
         method Dispatch(cur_ev : LocEvent)
             modifies this.state, this`queue, this`gstate
-            requires correct_internal_time(cur_ev)
+            requires consistent_internal_time()
+            requires consistent_cur_event_time(cur_ev)
 
             requires valid_interarrivals([cur_ev] + queue)
             requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
@@ -219,7 +235,8 @@ abstract module LucidBase {
         // TODO: the verification in generate is complicated and somewhat disorganized. 
         // How much is necessary?
         method Generate(cur_ev : LocEvent, e : Event, out_natTime : nat)
-            requires correct_internal_time(cur_ev)
+            requires consistent_internal_time()
+            requires consistent_cur_event_time(cur_ev)
             requires valid_interarrivals([cur_ev] + queue)
             requires valid_event_times(this.gstate, [cur_ev] + this.queue)    
                 requires valid_event_time(this.gstate, LocEvent(e, out_natTime % T, out_natTime))
@@ -248,6 +265,71 @@ abstract module LucidBase {
             valid_event_times_app(this.gstate, queue, out_ev);
             queue := new_queue;
         }
+
+    
+
+        /*************************** Arrival methods ***************************/
+        /* The Arrival method runs the program on an arbitrary event 
+           that is a valid input event for the program in its current state. 
+           There is a "valid_arrival" predicate that what it means 
+           for an event to be a valid, and two versions of the Arrival method 
+           that use "valid_arrival" in different ways. */
+           
+
+
+        ghost predicate valid_arrival(e : LocEvent, gstate : GhostState)
+            // valid_arrival(e) is the set of constraints that 
+            // must hold on an event in order to be a valid 
+            // input to the program given its current state.  
+            reads this, this.state, this`lastNatTime
+        {
+                valid_interarrivals([e])
+            &&  valid_event_times(gstate, [e])
+            &&  pre_dispatch(this.state, gstate, e, [], this.lastNatTime)
+            && lastNatTime <= e.natTime
+            && this.natTime == e.natTime
+            && this.time == e.time
+        }
+
+        method ArrivalUsingAssume()
+            // ArrivalUsingAssume() constructs a LocEvent e that is _assumed_ to 
+            // satisfy valid_arrival.
+            modifies this`queue, this.state, this`gstate, this`lastNatTime, this`natTime, this`time        
+        {
+             
+            var e : LocEvent; 
+            e :| assume valid_arrival(e, this.gstate); 
+                // "x :| X" -- "Set x to a value that satisfies X."
+                // "x :| assume X" -- "Assume x is a value that satisfies X."        
+            var input_queue := [e];
+            assert input_queue[0] == e;
+            assert input_queue[1..] == [];
+            assert pre_dispatch(this.state, this.gstate, input_queue[0], input_queue[1..], lastNatTime);
+            var events_processed := ProcessEvent(10, [e]);
+        }
+
+        method ConcreteArrival() 
+            // Run the program on an event created by MakeValidArrivalEvent()
+            modifies this`queue, this.state, this`gstate, this`lastNatTime, this`natTime, this`time        
+        {
+            var e := MakeValidArrivalEvent();
+            // assert valid_interarrivals([e]);
+            // assert valid_event_times(this.gstate, [e]);
+            // assert pre_dispatch(this.state, this.gstate,e, [], lastNatTime);
+            var input_queue := [e];
+            assert input_queue[0] == e;
+            assert input_queue[1..] == [];
+            assert pre_dispatch(this.state, this.gstate, input_queue[0], input_queue[1..], lastNatTime);
+            var events_processed := ProcessEvent(10, [e]);
+        }
+
+        method MakeValidArrivalEvent() returns (e:LocEvent)
+            ensures valid_arrival(e, this.gstate)
+
+
+
+
+
     }
 
 
